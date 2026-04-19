@@ -4,3 +4,4 @@ storage/sso.db
 TODO
 .idea
 .vscode
+.DS_Store
