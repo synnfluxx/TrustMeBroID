@@ -4,7 +4,7 @@ TrustMeBroID - it's a best sso service designed for best pet projects
 
 ## API
 
-### gRPC (`:1337`)
+### gRPC
 
 Admin methods require the `x-admin-token` metadata header.
 
@@ -18,7 +18,7 @@ Admin methods require the `x-admin-token` metadata header.
 | `DeleteUser` | admin | Delete a user by email / username / ID |
 | `DeleteAdmin` | admin | Revoke admin role |
 
-### HTTP (`:7171`)
+### HTTP
 
 | Endpoint | Method | Description |
 |---|---|---|
