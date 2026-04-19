@@ -1,0 +1,8 @@
+env: "local" # dev, prod
+token_ttl: 1h
+grpc:
+  port: 1337
+  timeout: 1488h
+postgres:
+     port: 5432
+     host: "postgres"

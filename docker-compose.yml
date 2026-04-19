@@ -1,0 +1,44 @@
+services:
+    postgres:
+        image: postgres:alpine
+        ports:
+            - 5432:5432
+        restart: always
+        env_file:
+            - .env
+        environment:
+            POSTGRES_USER: ${DB_USER}
+            POSTGRES_PASSWORD: ${DB_PASSWORD}
+            POSTGRES_DB: ${DB_NAME}
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+            interval: 1s
+            timeout: 5s
+            retries: 3
+
+    migrator:
+        image: migrate/migrate
+        env_file:
+            - .env
+        depends_on:
+            postgres:
+                condition: service_healthy
+        volumes:
+            - ./migrations:/migrations
+        command: ["-path", "/migrations/", "-database", "postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable", "up"]
+
+    sso:
+        build: .
+        ports:
+            - "1337:1337"
+            - "7171:7171"
+        volumes:
+            - ./storage:/app/storage
+            - ./config:/app/config
+        env_file:
+            - .env
+        environment:
+            - PGSSLMODE=disable
+        depends_on:
+            migrator:
+                condition: service_completed_successfully

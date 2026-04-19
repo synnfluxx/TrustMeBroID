@@ -1,0 +1,8 @@
+.git
+AUTHORS.md
+CONTRIBUTING.md
+LICENSE
+Taskfile.yaml
+.git*
+.idea
+.vscode
