@@ -29,7 +29,7 @@ func main() {
 
 	log.Info("starting sso server")
 
-	application := app.New(log, cfg.GRPC.Port, cfg.DB.ConnectionString, cfg.TokenTTL)
+	application := app.New(log, cfg.GRPC.Port, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 
 	go application.GRPCSrv.MustRun()
 	go application.HTTPSrv.MustRun()

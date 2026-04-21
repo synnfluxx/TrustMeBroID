@@ -10,10 +10,12 @@ import (
 )
 
 type Config struct {
-	Env      string         `yaml:"env" env-required:"true"`
-	TokenTTL time.Duration  `yaml:"token_ttl" env-required:"true"`
-	GRPC     GRPCConfig     `yaml:"grpc"`
-	DB       PostgresConfig `yaml:"postgres" env-required:"true"`
+	Env             string         `yaml:"env" env-required:"true"`
+	AccessTokenTTL  time.Duration  `yaml:"access_token_ttl" env-required:"true"`
+	RefreshTokenTTL time.Duration  `yaml:"refresh_token_ttl" env-required:"true"`
+	GRPC            GRPCConfig     `yaml:"grpc"`
+	DB              PostgresConfig `yaml:"postgres" env-required:"true"`
+	Redis           RedisConfig    `yaml:"redis" env-required:"true"`
 }
 
 type GRPCConfig struct {
@@ -27,13 +29,20 @@ type PostgresConfig struct {
 	ConnectionString string `yaml:"-"`
 }
 
+type RedisConfig struct {
+	Port    int           `yaml:"port"`
+	Host    string        `yaml:"host"`
+	Timeout time.Duration `yaml:"timeout"`
+	Retries int           `yaml:"retires"`
+}
+
 func (c *PostgresConfig) mustSetConnectionString() {
 	user, pw, name := os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME")
-	
+
 	if user == "" || pw == "" || name == "" {
 		panic("postgres field must be filled")
 	}
-	
+
 	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s", user, pw, c.Host, c.Port, name)
 }
 
@@ -56,7 +65,7 @@ func MustLoadByPath(path string) *Config {
 	if err := cleanenv.ReadConfig(path, &cfg); err != nil {
 		panic("failed to read config: " + err.Error())
 	}
-	
+
 	cfg.DB.mustSetConnectionString()
 
 	return &cfg

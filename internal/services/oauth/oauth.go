@@ -61,7 +61,7 @@ func (o *OAuthService) Callback(code string, appID int64, tokenTTL time.Duration
 		return "", ErrInvalidFields
 	}
 
-	usr, err := o.storage.SaveOAuthUser(context.Background(), username, email, appID)
+	usr, err := o.storage.SaveOAuthUser(context.Background(), email, username, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserExists) {
 			usr, err = o.storage.UserByEmail(context.Background(), email, appID)

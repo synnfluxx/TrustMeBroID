@@ -1,8 +1,14 @@
 env: "local" # dev, prod
-token_ttl: 1h
+access_token_ttl: 5m
+refresh_token_ttl: 168h
 grpc:
   port: 1337
   timeout: 1488h
 postgres:
      port: 5432
      host: "postgres"
+redis:
+  port: 6379
+  host: "redis"
+  timeout: 15s
+  retries: 3

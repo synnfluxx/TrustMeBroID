@@ -24,8 +24,8 @@ const (
 var PassErr = errors.New("password must be at least 8 characters long and include at least one uppercase letter and one number")
 
 type Auth interface {
-	LoginByEmail(ctx context.Context, email string, password string, appID int64) (token string, err error)
-	LoginByUsername(ctx context.Context, username, password string, appID int64) (token string, err error)
+	LoginByEmail(ctx context.Context, email string, password string, appID int64) (accessToken, refreshToken string, err error)
+	LoginByUsername(ctx context.Context, username, password string, appID int64) (accessToken, refreshToken string, err error)
 	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, err error)
 	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
 	RegisterApp(ctx context.Context, appName string) (appID int64, secret string, err error)
@@ -36,6 +36,8 @@ type Auth interface {
 	DeleteAdminByEmail(ctx context.Context, appID int64, email string) error
 	DeleteAdminByUsername(ctx context.Context, appID int64, username string) error
 	DeleteApp(ctx context.Context, appID int64) error
+	RefreshToken(ctx context.Context, refreshToken string) (string, error)
+	UpdateRefreshToken(ctx context.Context, token string) (string, error)
 }
 
 type serverAPI struct {
@@ -57,7 +59,7 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		token, err := s.auth.LoginByEmail(ctx, req.GetEmail(), req.GetPassword(), req.GetAppId())
+		accessToken, refreshToken, err := s.auth.LoginByEmail(ctx, req.GetEmail(), req.GetPassword(), req.GetAppId())
 		if err != nil {
 			if errors.Is(err, auth.ErrInvalidCredentials) {
 				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
@@ -65,19 +67,23 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			if errors.Is(err, storage.ErrAppNotFound) {
 				return nil, status.Error(codes.NotFound, "app not found")
 			}
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.NotFound, "user not found")
+			}
 
 			return nil, status.Error(codes.Internal, "internal error")
 		}
 
 		return &ssov1.LoginResponse{
-			Token: token,
+			RefreshToken: refreshToken,
+			AccessToken:  accessToken,
 		}, nil
 	case *ssov1.LoginRequest_Username:
 		if err := validate("", req.GetPassword()); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		token, err := s.auth.LoginByUsername(ctx, req.GetUsername(), req.GetPassword(), req.GetAppId())
+		accessToken, refreshToken, err := s.auth.LoginByUsername(ctx, req.GetUsername(), req.GetPassword(), req.GetAppId())
 		if err != nil {
 			if errors.Is(err, auth.ErrInvalidCredentials) {
 				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
@@ -85,16 +91,31 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			if errors.Is(err, storage.ErrAppNotFound) {
 				return nil, status.Error(codes.NotFound, "app not found")
 			}
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.NotFound, "user not found")
+			}
 
 			return nil, status.Error(codes.Internal, "internal error")
 		}
 
 		return &ssov1.LoginResponse{
-			Token: token,
+			RefreshToken: refreshToken,
+			AccessToken:  accessToken,
 		}, nil
 	default:
 		return nil, status.Error(codes.InvalidArgument, "invalid identifier")
 	}
+}
+
+func (s *serverAPI) RefreshToken(ctx context.Context, req *ssov1.RefreshTokenRequest) (*ssov1.RefreshTokenResponse, error) {
+	token, err := s.auth.RefreshToken(ctx, req.GetRefreshToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return &ssov1.RefreshTokenResponse{
+		NewToken: token,
+	}, nil
 }
 
 func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*ssov1.RegisterResponse, error) {
@@ -148,7 +169,7 @@ func (s *serverAPI) RegisterApp(ctx context.Context, req *ssov1.RegisterAppReque
 	}
 
 	return &ssov1.RegisterAppResponse{
-		AppId: appID,
+		AppId:  appID,
 		Secret: secret,
 	}, nil
 }
@@ -166,6 +187,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal error")
 		}
 
 		return &ssov1.Empty{}, nil
@@ -175,6 +198,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal error")
 		}
 
 		return &ssov1.Empty{}, nil
@@ -184,6 +209,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal error")
 		}
 
 		return &ssov1.Empty{}, nil
@@ -236,9 +263,26 @@ func (s *serverAPI) DeleteApp(ctx context.Context, req *ssov1.DeleteAppRequest) 
 		if errors.Is(err, storage.ErrAppNotFound) {
 			return nil, status.Error(codes.InvalidArgument, "invalid app_id")
 		}
+
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 
 	return &ssov1.Empty{}, nil
+}
+
+func (s *serverAPI) UpdateRefreshToken(ctx context.Context, req *ssov1.UpdateRefreshTokenRequst) (*ssov1.UpdateRefreshTokenResponse, error) {
+	token, err := s.auth.UpdateRefreshToken(ctx, req.GetRefreshToken())
+	if err != nil {
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "refresh token not found")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.UpdateRefreshTokenResponse{
+		RefreshToken: token,
+	}, nil
 }
 
 func validate(email, password string) error {

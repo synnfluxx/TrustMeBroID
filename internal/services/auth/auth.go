@@ -1,14 +1,17 @@
 package auth
+
 //TODO: delete ok from Delete methods
 
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
@@ -31,13 +34,16 @@ var (
 type Auth struct {
 	log *slog.Logger
 
-	usrSaver       UserSaver
-	usrProvider    UserProvider
-	appProvider    AppProvider
-	adminProvider  AdminProvider
-	filterProvider filterProvider
-	tokenTTL       time.Duration
-	filters        *filters
+	jwtProvider     JWTProvider
+	usrSaver        UserSaver
+	usrProvider     UserProvider
+	appProvider     AppProvider
+	adminProvider   AdminProvider
+	filterProvider  filterProvider
+	RefreshtokenTTL time.Duration
+	AccessTokenTTL  time.Duration
+	filters         *filters
+	appSecrets      sync.Map
 }
 
 type filters struct {
@@ -78,25 +84,38 @@ type filterProvider interface {
 	Usernames(ctx context.Context) ([]string, error)
 }
 
-func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appProvider AppProvider, adminProvider AdminProvider, filterProvider filterProvider, tokenTTL time.Duration) *Auth {
+type JWTProvider interface {
+	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
+	SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error
+	GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error)
+}
+
+func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appProvider AppProvider, adminProvider AdminProvider, filterProvider filterProvider, jwtProvider JWTProvider, RefreshTokenTTl, AccessTokenTTL time.Duration) (*Auth, error) {
 	auth := &Auth{
-		log:            log,
-		usrSaver:       userSaver,
-		usrProvider:    userProvider,
-		appProvider:    appProvider,
-		adminProvider:  adminProvider,
-		filterProvider: filterProvider,
-		tokenTTL:       tokenTTL,
+		log:             log,
+		jwtProvider:     jwtProvider,
+		usrSaver:        userSaver,
+		usrProvider:     userProvider,
+		appProvider:     appProvider,
+		adminProvider:   adminProvider,
+		filterProvider:  filterProvider,
+		AccessTokenTTL:  AccessTokenTTL,
+		RefreshtokenTTL: RefreshTokenTTl,
 		filters: &filters{
 			emails:    bloom.New(1000*1000*20, 5),
 			usernames: bloom.New(1000*1000*20, 5),
 		},
+		appSecrets: sync.Map{},
 	}
-	auth.MustHydrate(context.Background())
-	return auth
+	err := auth.Hydrate(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	return auth, nil
 }
 
-func (a *Auth) MustHydrate(ctx context.Context) {
+func (a *Auth) Hydrate(ctx context.Context) error {
 	const op = "auth.Hydrate"
 	log := a.log.With("op", op)
 	log.Info("Hydrating start")
@@ -105,7 +124,7 @@ func (a *Auth) MustHydrate(ctx context.Context) {
 
 	emails, err := a.filterProvider.Emails(ctx)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	for _, v := range emails {
@@ -115,7 +134,7 @@ func (a *Auth) MustHydrate(ctx context.Context) {
 
 	usernames, err := a.filterProvider.Usernames(ctx)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	for _, v := range usernames {
@@ -124,9 +143,10 @@ func (a *Auth) MustHydrate(ctx context.Context) {
 	}
 
 	log.Info("filter hydrated successfully", slog.Any("rows", count), slog.Any("elapsed", time.Since(t).Milliseconds()))
+	return nil
 }
 
-func (a *Auth) LoginByEmail(ctx context.Context, email, password string, appID int64) (string, error) {
+func (a *Auth) LoginByEmail(ctx context.Context, email, password string, appID int64) (string, string, error) {
 	const op = "auth.Login (ByEmail)"
 	log := a.log.With("op", op)
 	log.Info("attempting to login user")
@@ -136,39 +156,44 @@ func (a *Auth) LoginByEmail(ctx context.Context, email, password string, appID i
 		if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
 			log.Warn("user not found", sl.Err(err))
 
-			return "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+			return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 		}
 
 		log.Error("failed to get user", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
-
 
 	if err := bcrypt.CompareHashAndPassword(user.PassHash, []byte(password)); err != nil {
 		log.Info("invalid credentials", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 	}
 
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("user logged in successfully")
 
-	token, err := jwt.NewToken(user, app, a.tokenTTL)
+	accessToken, refreshToken, err := jwt.NewTokens(user.ID, int64(app.ID), app.Secret, a.RefreshtokenTTL, a.AccessTokenTTL)
 	if err != nil {
 		log.Error("failed to generate token", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	return token, nil
+	if err := a.jwtProvider.SaveRefreshToken(context.Background(), refreshToken, user.ID, int64(app.ID), a.RefreshtokenTTL); err != nil {
+		log.Error("failed to save refresh token", sl.Err(err))
+
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	return accessToken, refreshToken, nil
 }
 
-func (a *Auth) LoginByUsername(ctx context.Context, username string, password string, appID int64) (string, error) {
+func (a *Auth) LoginByUsername(ctx context.Context, username string, password string, appID int64) (string, string, error) {
 	const op = "auth.Login (ByUsername)"
 	log := a.log.With("op", op)
 	log.Info("attempting to login user")
@@ -178,35 +203,41 @@ func (a *Auth) LoginByUsername(ctx context.Context, username string, password st
 		if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
 			log.Warn("user not found", sl.Err(err))
 
-			return "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+			return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 		}
 
 		log.Error("failed to get user", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	if err := bcrypt.CompareHashAndPassword(user.PassHash, []byte(password)); err != nil {
 		log.Info("invalid credentials", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 	}
 
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("user logged in successfully")
 
-	token, err := jwt.NewToken(user, app, a.tokenTTL)
+	accessToken, refreshToken, err := jwt.NewTokens(user.ID, int64(app.ID), app.Secret, a.RefreshtokenTTL, a.AccessTokenTTL)
 	if err != nil {
 		log.Error("failed to generate token", sl.Err(err))
 
-		return "", fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	return token, nil
+	if err := a.jwtProvider.SaveRefreshToken(context.Background(), refreshToken, user.ID, int64(app.ID), a.RefreshtokenTTL); err != nil {
+		log.Error("failed to save refresh token", sl.Err(err))
+
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	return accessToken, refreshToken, nil
 }
 
 func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {
@@ -310,6 +341,41 @@ func (a *Auth) DeleteUserByEmail(ctx context.Context, email string, appID int64)
 	return nil
 }
 
+func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
+	const op = "auth.RefreshToken"
+	log := a.log.With(slog.String("op", op))
+	log.Info("trying to refresh. token", "refreshToken", fmt.Sprintf("*****%s", token[len(token)-4:]))
+
+	data, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
+	if err != nil {
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			return "", storage.ErrTokenNotFound
+		}
+
+		return "", err
+	}
+
+	secret, ok := a.appSecrets.Load(data.AppId)
+	if !ok {
+		log.Info("App secret Is not cached")
+
+		app, err := a.appProvider.App(ctx, data.AppId)
+		if err != nil {
+			return "", err
+		}
+
+		secret = app.Secret
+		a.appSecrets.Store(app.ID, app.Secret)
+	}
+
+	newToken, err := jwt.NewAccessToken(data.UserID, data.AppId, a.AccessTokenTTL, secret.(string))
+	if err != nil {
+		return "", err
+	}
+
+	return newToken, nil
+}
+
 func (a *Auth) IsAdmin(ctx context.Context, UserID int64, appID int64) (bool, error) {
 	const op = "auth.IsAdmin"
 
@@ -372,6 +438,10 @@ func (a *Auth) RegisterApp(ctx context.Context, appName string) (appID int64, se
 	}
 
 	encrypted, err := encryptor.EncryptString([]byte(os.Getenv("MASTER_KEY")), secretKey)
+	if err != nil {
+		log.Warn("encrypting error", sl.Err(err))
+		return 0, "", err
+	}
 
 	id, err := a.appProvider.RegisterApp(ctx, appName, encrypted)
 	if err != nil {
@@ -381,7 +451,9 @@ func (a *Auth) RegisterApp(ctx context.Context, appName string) (appID int64, se
 		}
 	}
 
-	return id, string(secretKey), nil
+	a.appSecrets.Store(id, hex.EncodeToString(secretKey))
+
+	return id, hex.EncodeToString(secretKey), nil
 }
 
 func (a *Auth) DeleteApp(ctx context.Context, appID int64) error {
@@ -398,6 +470,8 @@ func (a *Auth) DeleteApp(ctx context.Context, appID int64) error {
 
 		return fmt.Errorf("%s: %w", op, err)
 	}
+
+	a.appSecrets.Delete(appID)
 
 	return nil
 }
@@ -430,4 +504,40 @@ func (a *Auth) DeleteAdminByUsername(ctx context.Context, appID int64, username 
 	}
 
 	return nil
+}
+
+func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, error) {
+	const op = "auth.UpdateRefreshToken"
+	log := a.log.With(slog.String("op", op))
+	log.Info("trying to update refresh token", "Old token", fmt.Sprintf("*****%s", token[len(token)-4:]))
+
+	fields, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	secret, ok := a.appSecrets.Load(fields.AppId)
+	if !ok {
+		app, err := a.appProvider.App(ctx, fields.AppId)
+		if err != nil {
+			log.Warn("error", sl.Err(err))
+			return "", fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
+		}
+		secret = app.Secret
+	}
+
+	refreshToken, err := jwt.NewRefreshToken(fields.UserID, fields.AppId, a.RefreshtokenTTL, secret.(string))
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	err = a.jwtProvider.SetNewRefreshToken(ctx, token, refreshToken, a.RefreshtokenTTL)
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	return refreshToken, nil
 }

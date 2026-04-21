@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -17,7 +16,6 @@ import (
 
 type Storage struct {
 	db *sql.DB
-	mu sync.Mutex
 }
 
 func New(url string) (*Storage, error) {
@@ -34,51 +32,33 @@ func New(url string) (*Storage, error) {
 }
 
 func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
-		const op = "storage.postgres.reaper"
+	const op = "storage.postgres.reaper"
 
-		s.mu.Lock()
-		defer s.mu.Unlock()
+	deletedUsers := make([]int64, 0)
+	stmt, err := s.db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id")
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
 
-		deletedUsers := make([]int64, 0)
-		logStmt, err := s.db.Prepare("SELECT id FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at")
-		if err != nil {
-			return nil, err
+	rows, err := stmt.QueryContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			continue
 		}
-		defer logStmt.Close()
+		deletedUsers = append(deletedUsers, uid)
+	}
 
-		rows, err := logStmt.QueryContext(ctx)
-		if err != nil {
-			return nil, err
-		}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-		for rows.Next() {
-			var uid int64
-			if err := rows.Scan(&uid); err != nil {
-				continue
-			}
-			deletedUsers = append(deletedUsers, uid)
-		}
-
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-
-		delStmt, err := s.db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at")
-		if err != nil {
-			return nil, err
-		}
-		defer delStmt.Close()
-
-		res, err := delStmt.ExecContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		if n, _ := res.RowsAffected(); n != int64(len(deletedUsers)) {
-			return nil, fmt.Errorf("%s: %s", op, "not all users have been deleted") // TODO: const error
-		}
-
-		return deletedUsers, nil
+	return deletedUsers, nil
 }
 
 func (s *Storage) SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (int64, error) {
@@ -431,7 +411,7 @@ func (s *Storage) RegisterApp(ctx context.Context, appName, appSecret string) (a
 	defer stmt.Close()
 
 	var id int64
-	err = stmt.QueryRowContext(ctx, appName, appSecret).Scan()
+	err = stmt.QueryRowContext(ctx, appName, appSecret).Scan(&id)
 	if err != nil {
 		var pqErr *pq.Error
 

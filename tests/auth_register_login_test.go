@@ -2,11 +2,13 @@ package tests
 
 import (
 	"log"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/synnfluxx/TrustMeBroID/tests/suite"
@@ -21,6 +23,7 @@ const (
 
 func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 	ctx, st := suite.New(t)
+	godotenv.Load()
 
 	email := gofakeit.Email()
 	username := gofakeit.Username()
@@ -46,22 +49,42 @@ func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 	loginTime := time.Now()
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, respLogin.GetToken())
+	assert.NotEmpty(t, respLogin.GetAccessToken())
+	assert.NotEmpty(t, respLogin.GetRefreshToken())
 
-	token := respLogin.GetToken()
+	refreshToken := respLogin.GetRefreshToken()
+	refreshTokenParsed, err := jwt.Parse(refreshToken, func(token *jwt.Token) (interface{}, error) {
+		return []byte(st.AppSecret), nil
+	})
+	require.NoError(t, err)
+
+	refreshClaims, ok := refreshTokenParsed.Claims.(jwt.RegisteredClaims)
+	require.True(t, ok)
+
+	uid, err := strconv.Atoi(refreshClaims.Subject)
+	require.NoError(t, err)
+
+	assert.Equal(t, resp.GetUserId(), int64(uid))
+	assert.Equal(t, st.AppID, refreshClaims.Issuer)
+
+	assert.InDelta(t, loginTime.Add(st.Cfg.AccessTokenTTL).Unix(), refreshClaims.ExpiresAt.Unix(), deltaSeconds)
+
+	token := respLogin.GetAccessToken()
 	tokenParsed, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
 		return []byte(st.AppSecret), nil
 	})
 	require.NoError(t, err)
 
-	claims, ok := tokenParsed.Claims.(jwt.MapClaims)
+	claims, ok := tokenParsed.Claims.(jwt.RegisteredClaims)
 	require.True(t, ok)
 
-	assert.Equal(t, resp.GetUserId(), int64(claims["uid"].(float64)))
-	assert.Equal(t, email, claims["email"].(string))
-	assert.Equal(t, st.AppID, int(claims["app_id"].(float64)))
+	uid, err = strconv.Atoi(claims.Subject)
+	require.NoError(t, err)
 
-	assert.InDelta(t, loginTime.Add(st.Cfg.TokenTTL).Unix(), claims["exp"].(float64), deltaSeconds)
+	assert.Equal(t, resp.GetUserId(), int64(uid))
+	assert.Equal(t, st.AppID, claims.Issuer)
+
+	assert.InDelta(t, loginTime.Add(st.Cfg.AccessTokenTTL).Unix(), claims.ExpiresAt.Unix(), deltaSeconds)
 }
 
 func TestRegisterLogin_Login_DuplicateRegistration(t *testing.T) {

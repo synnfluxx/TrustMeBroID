@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage/postgres"
+	storage_redis "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
 )
 
 type App struct {
@@ -17,8 +19,13 @@ type App struct {
 	HTTPSrv *httpApp.App
 }
 
-func New(log *slog.Logger, grpcPort int, storagePath string, tokenTTL time.Duration) *App {
+func New(log *slog.Logger, grpcPort int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL time.Duration) (*App) {
 	storage, err := postgres.New(storagePath)
+	if err != nil {
+		panic(err)
+	}
+
+	redis, err := storage_redis.MustNewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries)
 	if err != nil {
 		panic(err)
 	}
@@ -36,10 +43,13 @@ func New(log *slog.Logger, grpcPort int, storagePath string, tokenTTL time.Durat
 		}
 	}()
 
-	authService := auth.New(log, storage, storage, storage, storage, storage, tokenTTL)
+	authService, err := auth.New(log, storage, storage, storage, storage, storage, redis, accessTokenTTL, refreshTokenTTL)
+	if err != nil {
+		panic(err)
+	}
 
 	grpcApp := grpcApp.New(log, authService, grpcPort)
-	httpApp := httpApp.NewHTTPApp(storage, log, tokenTTL)
+	httpApp := httpApp.NewHTTPApp(storage, log, refreshTokenTTL) // TODO: REFRESH TOKEN NEED TO BE REPLACED
 
 	return &App{
 		GRPCSrv: grpcApp,
