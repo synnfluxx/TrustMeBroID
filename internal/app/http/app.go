@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/synnfluxx/TrustMeBroID/internal/http/handlers"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/oauth"
 )
 
 type App struct {
@@ -33,14 +34,14 @@ type OAuthServer interface {
 	GitHubLoginHandler() http.HandlerFunc
 }
 
-func NewHTTPApp(storage handlers.Storage,log *slog.Logger, tokenTTL time.Duration) *App {
+func NewHTTPApp(storage handlers.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL time.Duration) *App {
 	bindAddr := os.Getenv("HTTP_BIND_ADDR")
 
 	app := &App{
 		router:   mux.NewRouter(),
 		log:      log,
 		bindAddr: bindAddr,
-		oAuthServer: handlers.NewHTTPHandlerServer(storage, log, tokenTTL),
+		oAuthServer: handlers.NewHTTPHandlerServer(storage, db, log, accessTTL, refreshTTL),
 	}
 
 	app.configureRouter()

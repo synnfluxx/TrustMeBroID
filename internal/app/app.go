@@ -49,7 +49,7 @@ func New(log *slog.Logger, grpcPort int, storagePath string, redisPort, redisRet
 	}
 
 	grpcApp := grpcApp.New(log, authService, grpcPort)
-	httpApp := httpApp.NewHTTPApp(storage, log, refreshTokenTTL) // TODO: REFRESH TOKEN NEED TO BE REPLACED
+	httpApp := httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL)
 
 	return &App{
 		GRPCSrv: grpcApp,

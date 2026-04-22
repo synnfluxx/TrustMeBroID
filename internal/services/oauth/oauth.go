@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,9 +24,14 @@ type Storage interface {
 }
 
 type OAuthService struct {
-	config  OAuthConfig
-	storage Storage
-	log *slog.Logger
+	config        OAuthConfig
+	storage       Storage
+	tokenProvider TokenProvider
+	log           *slog.Logger
+}
+
+type TokenProvider interface {
+	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
 }
 
 type OAuthConfig interface {
@@ -33,32 +39,33 @@ type OAuthConfig interface {
 	Callback(code string) (map[string]string, error)
 }
 
-func New(OAuthConfig OAuthConfig, storage Storage, log *slog.Logger) *OAuthService {
+func New(OAuthConfig OAuthConfig, storage Storage, rdb TokenProvider, log *slog.Logger) *OAuthService {
 	return &OAuthService{
-		config:  OAuthConfig,
-		storage: storage,
-		log: log,
+		config:        OAuthConfig,
+		storage:       storage,
+		tokenProvider: rdb,
+		log:           log,
 	}
 }
 
-func (o *OAuthService) Login() (string, string) {
+func (o *OAuthService) Login(appID int64) (string, string) {
 	b := make([]byte, 16)
 	rand.Read(b)
-	state := hex.EncodeToString(b)
+	state := fmt.Sprintf("%s:%d", hex.EncodeToString(b), appID)
 
 	return state, o.config.URL(state)
 }
 
-func (o *OAuthService) Callback(code string, appID int64, tokenTTL time.Duration) (string, error) {
+func (o *OAuthService) Callback(code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, err error) {
 	oauthUser, err := o.config.Callback(code)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	username, ok := oauthUser["username"]
 	email, ok := oauthUser["email"]
 	if !ok {
-		return "", ErrInvalidFields
+		return "", "", ErrInvalidFields
 	}
 
 	usr, err := o.storage.SaveOAuthUser(context.Background(), email, username, appID)
@@ -67,29 +74,35 @@ func (o *OAuthService) Callback(code string, appID int64, tokenTTL time.Duration
 			usr, err = o.storage.UserByEmail(context.Background(), email, appID)
 			if err != nil {
 				o.log.Warn("github oauth callback get user error: ", sl.Err(err))
-				return "", err
+				return "", "", err
 			}
 		} else {
 			o.log.Warn("github oauth callback save user error: ", sl.Err(err))
-			return "", err
+			return "", "", err
 		}
 	}
 
 	app, err := o.storage.App(context.Background(), appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
-			return "", err
+			return "", "", err
 		}
 
 		o.log.Warn("github oauth callback get app error: ", sl.Err(err))
-		return "", err
+		return "", "", err
 	}
 
-	token, err := jwt.NewToken(usr, app, tokenTTL)
+	accessToken, refreshToken, err = jwt.NewTokens(usr.ID, app.ID, app.Secret, refreshTTL, accessTTL)
 	if err != nil {
 		o.log.Warn("oauth callback get jwt token error: ", sl.Err(err))
-		return "", err
+		return "", "", err
 	}
 
-	return token, nil
+	err = o.tokenProvider.SaveRefreshToken(context.Background(), refreshToken, usr.ID, int64(appID), refreshTTL)
+	if err != nil {
+		o.log.Warn("save refresh token error", sl.Err(err))
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, nil
 }

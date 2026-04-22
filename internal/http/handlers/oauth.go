@@ -29,20 +29,22 @@ type GitHubUser struct {
 
 type OAuthService interface {
 	Login() (string, string)
-	Callback(code string, appID int64, tokenTTL time.Duration) (string, error)
+	Callback(code string, appID int64, tokenTTL time.Duration) (accessToken string, refreshToken string, err error)
 }
 
 type Server struct {
-	log         *slog.Logger
-	tokenTTL    time.Duration
-	GithubOAuth *oauth.OAuthService
+	log             *slog.Logger
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
+	GithubOAuth     *oauth.OAuthService
 }
 
-func NewHTTPHandlerServer(storage Storage, log *slog.Logger, tokenTTL time.Duration) *Server {
+func NewHTTPHandlerServer(storage Storage, tokenProvider oauth.TokenProvider, log *slog.Logger, accessTokenTTL, refreshTokenTTL time.Duration) *Server {
 	return &Server{
-		log:         log,
-		tokenTTL:    tokenTTL,
-		GithubOAuth: oauth.New(oauth.NewGithubConfig(), storage, log),
+		log:             log,
+		accessTokenTTL:  accessTokenTTL,
+		refreshTokenTTL: refreshTokenTTL,
+		GithubOAuth:     oauth.New(oauth.NewGithubConfig(), storage, tokenProvider, log),
 	}
 }
 
@@ -75,7 +77,12 @@ func (s *Server) GitHubLoginHandler() http.HandlerFunc {
 			return
 		}
 
-		state, url := s.GithubOAuth.Login()
+		aid, err := strconv.Atoi(appID)
+		if err != nil {
+			s.respondError(w, http.StatusBadRequest, "invalid app_id")
+			return
+		}
+		state, url := s.GithubOAuth.Login(int64(aid))
 
 		s.setState(w, state)
 		s.setURI(uri, w)
@@ -100,6 +107,11 @@ func (s *Server) GitHubOAuthCallbackHandler() http.HandlerFunc {
 
 		state := r.URL.Query().Get("state")
 		parts := strings.Split(state, ":")
+		if len(parts[1]) == 0 {
+			s.respondError(w, http.StatusBadRequest, "invalid state")
+			return
+		}
+
 		appID, err := strconv.Atoi(parts[1])
 		if err != nil {
 			s.log.Warn("str to int conv failed: ", sl.Err(err))
@@ -111,7 +123,7 @@ func (s *Server) GitHubOAuthCallbackHandler() http.HandlerFunc {
 			return
 		}
 
-		token, err := s.GithubOAuth.Callback(r.FormValue("code"), int64(appID), s.tokenTTL)
+		token, refreshToken, err := s.GithubOAuth.Callback(r.FormValue("code"), int64(appID), s.accessTokenTTL, s.refreshTokenTTL)
 		if err != nil {
 			if errors.Is(err, oauth.ErrInvalidFields) {
 				s.log.Warn("github oauth callback error: ", sl.Err(err))
@@ -119,12 +131,12 @@ func (s *Server) GitHubOAuthCallbackHandler() http.HandlerFunc {
 				return
 			}
 
-			sl.Err(err)
+			s.log.Warn("get tokens error", sl.Err(err))
 			s.respondError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		// TODO: validate function
 
+		s.setRefershToken(w, refreshToken)
 		redirectURL := fmt.Sprintf("%s?token=%s", uri.Value, token)
 		http.Redirect(w, r, redirectURL, http.StatusPermanentRedirect)
 	}
@@ -146,6 +158,18 @@ func (s *Server) setURI(uri string, w http.ResponseWriter) {
 		Name:     "uri",
 		Value:    uri,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	http.SetCookie(w, cookie)
+}
+
+func (s *Server) setRefershToken(w http.ResponseWriter, token string) {
+	cookie := &http.Cookie{
+		Name:     "refreshToken",
+		Value:    token,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(s.refreshTokenTTL.Seconds()),
 	}
 	http.SetCookie(w, cookie)
 }

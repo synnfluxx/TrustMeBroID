@@ -1,7 +1,5 @@
 package auth
 
-//TODO: delete ok from Delete methods
-
 import (
 	"context"
 	"crypto/rand"
