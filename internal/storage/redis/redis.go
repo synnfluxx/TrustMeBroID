@@ -1,4 +1,4 @@
-package storage_redis
+package redisStorage
 
 import (
 	"context"
@@ -15,7 +15,7 @@ type Storage struct {
 	rdb *redis.Client
 }
 
-func MustNewRedis(host string, timeout time.Duration, retries int) (*Storage, error) {
+func NewRedis(host string, timeout time.Duration, retries int) (*Storage, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:        host,
 		Password:    os.Getenv("REDIS_PW"),
@@ -60,16 +60,8 @@ func (s *Storage) GetRefreshTokenFields(ctx context.Context, token string) (*mod
 func (s *Storage) SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error {
 	const op = "storage.Redis.SaveRefreshToken"
 
-	pipe := s.rdb.TxPipeline()
-
-	pipe.HSet(ctx, token, map[string]any{
-		"uid": userID,
-		"aid": appID,
-	})
-
-	pipe.Expire(ctx, token, ttl)
-
-	_, err := pipe.Exec(ctx)
+	_, err := saveRefreshTokenScript.Run(ctx, s.rdb, []string{token}, userID, appID, ttl.Seconds()).Result()
+	
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -80,14 +72,13 @@ func (s *Storage) SaveRefreshToken(ctx context.Context, token string, userID int
 func (s *Storage) SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error {
 	const op = "storage.Redis.SetNewRefreshtoken"
 
-	pipe := s.rdb.TxPipeline()
-
-	pipe.Rename(ctx, oldToken, newToken)
-	pipe.Expire(ctx, newToken, ttl)
-
-	_, err := pipe.Exec(ctx)
+	res, err := setNewTokenScript.Run(ctx, s.rdb, []string{oldToken, newToken}, int(ttl.Seconds())).Result()
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
+	}
+	
+	if res.(int64) == 0 {
+		return fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
 	}
 
 	return nil

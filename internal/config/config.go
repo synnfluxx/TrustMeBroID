@@ -16,11 +16,17 @@ type Config struct {
 	GRPC            GRPCConfig     `yaml:"grpc"`
 	DB              PostgresConfig `yaml:"postgres" env-required:"true"`
 	Redis           RedisConfig    `yaml:"redis" env-required:"true"`
+	HTTP            HTTPConfig     `yaml:"http" env-required:"true"`
 }
 
 type GRPCConfig struct {
 	Port    int           `yaml:"port"`
 	Timeout time.Duration `yaml:"timeout"`
+	Rps     int           `yaml:"rps"` // Requests Per Second
+}
+
+type HTTPConfig struct {
+	Rps int `yaml:"rps"`
 }
 
 type PostgresConfig struct {
@@ -67,6 +73,8 @@ func MustLoadByPath(path string) *Config {
 	}
 
 	cfg.DB.mustSetConnectionString()
+	
+	os.Setenv("ENV", cfg.Env)
 
 	return &cfg
 }

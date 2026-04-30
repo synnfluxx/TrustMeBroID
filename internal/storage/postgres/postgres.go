@@ -15,7 +15,9 @@ import (
 )
 
 type Storage struct {
-	db *sql.DB
+	db         *sql.DB
+	masterKey  []byte
+	reaperStmt *sql.Stmt
 }
 
 func New(url string) (*Storage, error) {
@@ -26,25 +28,32 @@ func New(url string) (*Storage, error) {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	return &Storage{
+	strg := &Storage{
 		db: db,
-	}, nil
+	}
+
+	strg.masterKey = []byte(os.Getenv("MASTER_KEY"))
+
+	stmt, err := db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id")
+	if err != nil {
+		return nil, err
+	}
+
+	strg.reaperStmt = stmt
+
+	return strg, nil
 }
 
 func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
 	const op = "storage.postgres.reaper"
 
 	deletedUsers := make([]int64, 0)
-	stmt, err := s.db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id")
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
 
-	rows, err := stmt.QueryContext(ctx)
+	rows, err := s.reaperStmt.QueryContext(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var uid int64
@@ -55,7 +64,7 @@ func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	return deletedUsers, nil
@@ -64,14 +73,8 @@ func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
 func (s *Storage) SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (int64, error) {
 	const op = "storage.postgres.SaveUser"
 
-	stmt, err := s.db.Prepare("INSERT INTO users(email, username, pass_hash, app_id) VALUES($1, $2, $3, $4) RETURNING id")
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
 	var id int64
-	err = stmt.QueryRowContext(ctx, email, username, passHash, appID).Scan(&id)
+	err := s.db.QueryRowContext(ctx, "INSERT INTO users(email, username, pass_hash, app_id) VALUES($1, $2, $3, $4) RETURNING id", email, username, passHash, appID).Scan(&id)
 	if err != nil {
 		var pqErr *pq.Error
 
@@ -85,19 +88,13 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 	return id, nil
 }
 
-func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
-	const op = "storage.postgres.User"
+func (s *Storage) getUser(ctx context.Context, query string, args ...any) (models.User, error) {
+	const op = "storage.postgres.getUser"
 
-	stmt, err := s.db.Prepare("SELECT id, email, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2")
-	if err != nil {
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	row := stmt.QueryRowContext(ctx, userID, appID)
+	row := s.db.QueryRowContext(ctx, query, args...)
 
 	var user models.User
-	err = row.Scan(&user.ID, &user.Email, &user.PassHash, &user.DeletedAt)
+	err := row.Scan(&user.ID, &user.Email, &user.PassHash, &user.DeletedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
@@ -111,73 +108,36 @@ func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.U
 	}
 
 	return user, nil
+}
+
+func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
+	return s.getUser(ctx,
+		"SELECT id, email, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2",
+		userID,
+		appID,
+	)
 }
 
 func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
-	const op = "storage.postgres.UserByEmail"
-
-	stmt, err := s.db.Prepare("SELECT id, email, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2")
-	if err != nil {
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	row := stmt.QueryRowContext(ctx, email, appID)
-
-	var user models.User
-	err = row.Scan(&user.ID, &user.Email, &user.PassHash, &user.DeletedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
-		}
-
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-
-	if user.DeletedAt.Valid {
-		return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserDeleted)
-	}
-
-	return user, nil
+	return s.getUser(ctx,
+		"SELECT id, email, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2",
+		email,
+		appID,
+	)
 }
+
 func (s *Storage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
-	const op = "storage.postgres.UserByUsername"
-
-	stmt, err := s.db.Prepare("SELECT id, email, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2")
-	if err != nil {
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	row := stmt.QueryRowContext(ctx, appID, username)
-
-	var user models.User
-	err = row.Scan(&user.ID, &user.Email, &user.PassHash, &user.DeletedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
-		}
-
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-
-	if user.DeletedAt.Valid {
-		return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserDeleted)
-	}
-
-	return user, nil
+	return s.getUser(ctx,
+		"SELECT id, email, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2",
+		appID,
+		username,
+	)
 }
 
-func (s *Storage) DeleteUserByEmail(ctx context.Context, email string, appID int64) error {
-	const op = "storage.postgres.DeleteUserByEmail"
+func (s *Storage) deleteUser(ctx context.Context, query string, args ...any) error {
+	const op = "storage.postgres.deleteUser"
 
-	stmt, err := s.db.Prepare("UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND email = $3")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, time.Now(), appID, email)
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -189,101 +149,57 @@ func (s *Storage) DeleteUserByEmail(ctx context.Context, email string, appID int
 
 	if affected == 0 {
 		return storage.ErrUserNotFound
-	} else {
-		return nil
-	}
-}
-
-func (s *Storage) DeleteUserByUsername(ctx context.Context, username string, appID int64) error {
-	const op = "storage.postgres.DeleteUserByUsername"
-
-	stmt, err := s.db.Prepare("UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND username = $3")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, time.Now(), appID, username)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	if affected == 0 {
-		return storage.ErrUserNotFound
-	} else {
-		return nil
-	}
-}
-func (s *Storage) DeleteUserByUserID(ctx context.Context, userID, appID int64) error {
-	const op = "storage.postgres.DeleteUserByUserID"
-
-	stmt, err := s.db.Prepare("UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND id = $3")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, time.Now(), appID, userID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	if affected == 0 {
-		return storage.ErrUserNotFound
-	} else {
-		return nil
-	}
-}
-
-func (s *Storage) MakeAdmin(ctx context.Context, email string, appID int64) error {
-	const op = "storage.postgres.MakeAdmin"
-
-	stmt, err := s.db.Prepare("INSERT INTO admins (id, email) SELECT id, email FROM users WHERE email = $1 AND app_id = $2 ")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, email, appID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	count, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	if count == 0 {
-		return fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
 	}
 
 	return nil
 }
 
+func (s *Storage) DeleteUserByEmail(ctx context.Context, email string, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND email = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		email,
+	)
+}
+
+func (s *Storage) DeleteUserByUsername(ctx context.Context, username string, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND username = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		username,
+	)
+}
+
+func (s *Storage) DeleteUserByUserID(ctx context.Context, userID, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND id = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		userID,
+	)
+}
+
+func (s *Storage) MakeAdmin(ctx context.Context, userID, appID int64) (int64, error) {
+	const op = "storage.postgres.MakeAdmin"
+
+	var aid int64
+	err := s.db.QueryRowContext(ctx, "INSERT INTO admins (id, email, username, app_id) SELECT id, email, username, app_id FROM users WHERE id = $1 AND app_id = $2 RETURNING id", userID, appID).Scan(&aid)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return aid, nil
+}
+
 func (s *Storage) IsAdmin(ctx context.Context, id int64, appID int64) (bool, error) {
 	const op = "storage.postgres.IsAdmin"
 
-	stmt, err := s.db.Prepare("SELECT EXISTS(SELECT 1 FROM admins WHERE id = $1 AND app_id = $2)")
-	if err != nil {
-		return false, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
 	var isAdmin bool
-	row := stmt.QueryRowContext(ctx, id, appID)
+	row := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM admins WHERE id = $1 AND app_id = $2)", id, appID)
 
-	err = row.Scan(&isAdmin)
+	err := row.Scan(&isAdmin)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
@@ -295,16 +211,10 @@ func (s *Storage) IsAdmin(ctx context.Context, id int64, appID int64) (bool, err
 	return isAdmin, nil
 }
 
-func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
-	const op = "storage.postgres.DeleteAdminByEmail"
+func (s *Storage) deleteAdmin(ctx context.Context, query string, args ...any) error {
+	const op = "storage.postgres.deleteAdmin"
 
-	stmt, err := s.db.Prepare("DELETE FROM admins WHERE app_id = $1 AND email = $2")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, appID, email)
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -316,74 +226,28 @@ func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID in
 
 	if affected == 0 {
 		return storage.ErrUserNotFound
-	} else {
-		return nil
 	}
+
+	return nil
+}
+
+func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND email = $2", appID, email)
 }
 
 func (s *Storage) DeleteAdminByUsername(ctx context.Context, username string, appID int64) error {
-	const op = "storage.postgres.DeleteAdminByUsername"
-
-	stmt, err := s.db.Prepare("DELETE FROM admins WHERE app_id = $1 AND username = $2")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, appID, username)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	if affected == 0 {
-		return storage.ErrUserNotFound
-	} else {
-		return nil
-	}
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND username = $2", appID, username)
 }
 func (s *Storage) DeleteAdminByUserID(ctx context.Context, userID, appID int64) error {
-	const op = "storage.postgres.DeleteAdminByUserID"
-
-	stmt, err := s.db.Prepare("DELETE FROM admins WHERE app_id = $1 AND id = $2")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, appID, userID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	if affected == 0 {
-		return storage.ErrUserNotFound
-	} else {
-		return nil
-	}
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND id = $2", appID, userID)
 }
 
 func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
 	const op = "storage.postgres.App"
 
-	stmt, err := s.db.Prepare("SELECT id, name, secret FROM apps WHERE id = $1")
-	if err != nil {
-		return models.App{}, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	row := stmt.QueryRowContext(ctx, appID)
+	row := s.db.QueryRowContext(ctx, "SELECT id, name, secret, redirect_uri FROM apps WHERE id = $1", appID)
 	var app models.App
-	err = row.Scan(&app.ID, &app.Name, &app.Secret)
+	err := row.Scan(&app.ID, &app.Name, &app.Secret, &app.RedirectURI)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.App{}, storage.ErrAppNotFound
@@ -392,7 +256,7 @@ func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
 		return models.App{}, fmt.Errorf("%s: %w", op, err)
 	}
 
-	decrypted, err := encryptor.DecryptString([]byte(os.Getenv("MASTER_KEY")), app.Secret)
+	decrypted, err := encryptor.DecryptString(s.masterKey, app.Secret)
 	if err != nil {
 		return models.App{}, err
 	}
@@ -401,17 +265,11 @@ func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
 	return app, nil
 }
 
-func (s *Storage) RegisterApp(ctx context.Context, appName, appSecret string) (appID int64, err error) {
+func (s *Storage) RegisterApp(ctx context.Context, appName, appSecret, redirectURI string) (appID int64, err error) {
 	const op = "storage.postgres.RegisterApp"
 
-	stmt, err := s.db.Prepare("INSERT INTO apps(name, secret) VALUES($1, $2) RETURNING id")
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
 	var id int64
-	err = stmt.QueryRowContext(ctx, appName, appSecret).Scan(&id)
+	err = s.db.QueryRowContext(ctx, "INSERT INTO apps(name, secret, redirect_uri) VALUES($1, $2, $3) RETURNING id", appName, appSecret, redirectURI).Scan(&id)
 	if err != nil {
 		var pqErr *pq.Error
 
@@ -428,13 +286,7 @@ func (s *Storage) RegisterApp(ctx context.Context, appName, appSecret string) (a
 func (s *Storage) DeleteApp(ctx context.Context, appID int64) error {
 	const op = "storage.postgres.DeleteApp"
 
-	stmt, err := s.db.Prepare("DELETE FROM apps WHERE id = $1")
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
-	res, err := stmt.ExecContext(ctx, appID)
+	res, err := s.db.ExecContext(ctx, "DELETE FROM apps WHERE id = $1", appID)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -446,22 +298,16 @@ func (s *Storage) DeleteApp(ctx context.Context, appID int64) error {
 
 	if affected == 0 {
 		return storage.ErrAppNotFound
-	} else {
-		return nil
 	}
+
+	return nil
 }
 
 func (s *Storage) SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error) {
 	const op = "storage.postgres.SaveOAuthUser"
 
-	stmt, err := s.db.Prepare("INSERT INTO users(email, username, app_id) VALUES($1, $2, $3) RETURNING id")
-	if err != nil {
-		return models.User{}, fmt.Errorf("%s: %w", op, err)
-	}
-	defer stmt.Close()
-
 	var uid int64
-	err = stmt.QueryRowContext(ctx, email, username, appID).Scan(&uid)
+	err = s.db.QueryRowContext(ctx, "INSERT INTO users(email, username, app_id) VALUES($1, $2, $3) RETURNING id", email, username, appID).Scan(&uid)
 	if err != nil {
 		var pqErr *pq.Error
 

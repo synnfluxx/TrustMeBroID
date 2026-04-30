@@ -48,30 +48,33 @@ func New(OAuthConfig OAuthConfig, storage Storage, rdb TokenProvider, log *slog.
 	}
 }
 
-func (o *OAuthService) Login(appID int64) (string, string) {
+func (o *OAuthService) Login(appID int64) (state string, url string) { // Provider url for permission ask
 	b := make([]byte, 16)
 	rand.Read(b)
-	state := fmt.Sprintf("%s:%d", hex.EncodeToString(b), appID)
+	state = fmt.Sprintf("%s:%d", hex.EncodeToString(b), appID)
 
 	return state, o.config.URL(state)
 }
 
-func (o *OAuthService) Callback(code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, err error) {
+func (o *OAuthService) Callback(ctx context.Context, code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, err error) {
 	oauthUser, err := o.config.Callback(code)
 	if err != nil {
 		return "", "", err
 	}
 
 	username, ok := oauthUser["username"]
+	if !ok {
+		return "", "", ErrInvalidFields
+	}
 	email, ok := oauthUser["email"]
 	if !ok {
 		return "", "", ErrInvalidFields
 	}
 
-	usr, err := o.storage.SaveOAuthUser(context.Background(), email, username, appID)
+	usr, err := o.storage.SaveOAuthUser(ctx, email, username, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserExists) {
-			usr, err = o.storage.UserByEmail(context.Background(), email, appID)
+			usr, err = o.storage.UserByEmail(ctx, email, appID)
 			if err != nil {
 				o.log.Warn("github oauth callback get user error: ", sl.Err(err))
 				return "", "", err
@@ -82,7 +85,7 @@ func (o *OAuthService) Callback(code string, appID int64, accessTTL, refreshTTL 
 		}
 	}
 
-	app, err := o.storage.App(context.Background(), appID)
+	app, err := o.storage.App(ctx, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
 			return "", "", err
@@ -98,7 +101,7 @@ func (o *OAuthService) Callback(code string, appID int64, accessTTL, refreshTTL 
 		return "", "", err
 	}
 
-	err = o.tokenProvider.SaveRefreshToken(context.Background(), refreshToken, usr.ID, int64(appID), refreshTTL)
+	err = o.tokenProvider.SaveRefreshToken(ctx, refreshToken, usr.ID, int64(appID), refreshTTL)
 	if err != nil {
 		o.log.Warn("save refresh token error", sl.Err(err))
 		return "", "", err

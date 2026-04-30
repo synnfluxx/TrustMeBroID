@@ -3,10 +3,13 @@ package authgrpc
 import (
 	"context"
 	"errors"
+	"net/url"
+	"os"
 	"regexp"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
 	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
@@ -24,20 +27,16 @@ const (
 var PassErr = errors.New("password must be at least 8 characters long and include at least one uppercase letter and one number")
 
 type Auth interface {
-	LoginByEmail(ctx context.Context, email string, password string, appID int64) (accessToken, refreshToken string, err error)
-	LoginByUsername(ctx context.Context, username, password string, appID int64) (accessToken, refreshToken string, err error)
+	Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (accessToken, refreshToken string, err error)
 	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, err error)
 	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
-	RegisterApp(ctx context.Context, appName string) (appID int64, secret string, err error)
-	DeleteUserByUsername(ctx context.Context, username string, appID int64) error
-	DeleteUserByEmail(ctx context.Context, email string, appID int64) error
-	DeleteUserByUserID(ctx context.Context, userID, appID int64) error
-	DeleteAdminByUserID(ctx context.Context, appID, userID int64) error
-	DeleteAdminByEmail(ctx context.Context, appID int64, email string) error
-	DeleteAdminByUsername(ctx context.Context, appID int64, username string) error
+	RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error)
+	DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error
+	DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error
 	DeleteApp(ctx context.Context, appID int64) error
 	RefreshToken(ctx context.Context, refreshToken string) (string, error)
 	UpdateRefreshToken(ctx context.Context, token string) (string, error)
+	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
 }
 
 type serverAPI struct {
@@ -49,19 +48,31 @@ func Register(gRPC *grpc.Server, auth Auth) {
 	ssov1.RegisterAuthServer(gRPC, &serverAPI{auth: auth})
 }
 
+func (s *serverAPI) MakeAdmin(ctx context.Context, req *ssov1.MakeAdminRequest) (*ssov1.MakeAdminResponse, error) {
+	uid, err := s.auth.MakeAdmin(ctx, req.GetUserId(), req.GetAppId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	
+	return &ssov1.MakeAdminResponse{
+		UserId: uid,
+	}, nil
+}
+
 func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.LoginResponse, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
 	switch req.Identifier.(type) {
 	case *ssov1.LoginRequest_Email:
-		if err := validate(req.GetEmail(), req.GetPassword()); err != nil {
+		email := req.GetEmail()
+		if err := validate(email, req.GetPassword()); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		accessToken, refreshToken, err := s.auth.LoginByEmail(ctx, req.GetEmail(), req.GetPassword(), req.GetAppId())
+		accessToken, refreshToken, err := s.auth.Login(ctx, models.UserIdentifier{Email: &email}, req.GetPassword(), req.GetAppId())
 		if err != nil {
-			if errors.Is(err, auth.ErrInvalidCredentials) {
+			if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInvalidIdentifier) {
 				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
 			}
 			if errors.Is(err, storage.ErrAppNotFound) {
@@ -79,13 +90,14 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			AccessToken:  accessToken,
 		}, nil
 	case *ssov1.LoginRequest_Username:
+		username := req.GetUsername()
 		if err := validate("", req.GetPassword()); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		accessToken, refreshToken, err := s.auth.LoginByUsername(ctx, req.GetUsername(), req.GetPassword(), req.GetAppId())
+		accessToken, refreshToken, err := s.auth.Login(ctx, models.UserIdentifier{Username: &username}, req.GetPassword(), req.GetAppId())
 		if err != nil {
-			if errors.Is(err, auth.ErrInvalidCredentials) {
+			if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInvalidIdentifier) {
 				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
 			}
 			if errors.Is(err, storage.ErrAppNotFound) {
@@ -149,7 +161,11 @@ func (s *serverAPI) IsAdmin(ctx context.Context, req *ssov1.IsAdminRequest) (*ss
 	isAdmin, err := s.auth.IsAdmin(ctx, req.GetUserId(), req.GetAppId())
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
-			return nil, status.Error(codes.NotFound, "invalid credentials")
+			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+		}
+
+		if errors.Is(err, storage.ErrAppNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 		}
 
 		return nil, status.Error(codes.Internal, "internal error")
@@ -161,11 +177,17 @@ func (s *serverAPI) IsAdmin(ctx context.Context, req *ssov1.IsAdminRequest) (*ss
 }
 
 func (s *serverAPI) RegisterApp(ctx context.Context, req *ssov1.RegisterAppRequest) (*ssov1.RegisterAppResponse, error) {
-	appID, secret, err := s.auth.RegisterApp(ctx, req.GetAppName())
+	if !validateRedirectURI(req.GetRedirectUri(), os.Getenv("ENV")) {
+		return nil, status.Error(codes.InvalidArgument, "invalid redirect_uri")
+	}
+
+	appID, secret, err := s.auth.RegisterApp(ctx, req.GetAppName(), req.GetRedirectUri())
 	if err != nil {
 		if errors.Is(err, auth.ErrAppExists) {
 			return nil, status.Error(codes.AlreadyExists, "app already exists")
 		}
+
+		return nil, status.Error(codes.Internal, "internal server error")
 	}
 
 	return &ssov1.RegisterAppResponse{
@@ -181,8 +203,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 
 	switch req.Identifier.(type) {
 	case *ssov1.DeleteUserRequest_Email:
-
-		err := s.auth.DeleteUserByEmail(ctx, req.GetEmail(), req.GetAppId())
+		email := req.GetEmail()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{Email: &email}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
@@ -193,7 +215,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 
 		return &ssov1.Empty{}, nil
 	case *ssov1.DeleteUserRequest_Username:
-		err := s.auth.DeleteUserByUsername(ctx, req.GetUsername(), req.GetAppId())
+		username := req.GetUsername()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{Username: &username}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
@@ -204,7 +227,8 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 
 		return &ssov1.Empty{}, nil
 	case *ssov1.DeleteUserRequest_UserId:
-		err := s.auth.DeleteUserByUserID(ctx, req.GetUserId(), req.GetAppId())
+		userID := req.GetUserId()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{ID: &userID}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
@@ -226,29 +250,38 @@ func (s *serverAPI) DeleteAdmin(ctx context.Context, req *ssov1.DeleteAdminReque
 
 	switch req.Identifier.(type) {
 	case *ssov1.DeleteAdminRequest_Email:
-		err := s.auth.DeleteAdminByEmail(ctx, req.GetAppId(), req.GetEmail())
+		email := req.GetEmail()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{Email: &email}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
 		}
 
 		return &ssov1.Empty{}, nil
 	case *ssov1.DeleteAdminRequest_Username:
-		err := s.auth.DeleteAdminByUsername(ctx, req.GetAppId(), req.GetUsername())
+		username := req.GetUsername()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{Username: &username}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
 		}
 
 		return &ssov1.Empty{}, nil
 	case *ssov1.DeleteAdminRequest_UserId:
-		err := s.auth.DeleteAdminByUserID(ctx, req.GetAppId(), req.GetUserId())
+		userID := req.GetUserId()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{ID: &userID}, req.GetAppId())
 		if err != nil {
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
 		}
 
 		return &ssov1.Empty{}, nil
@@ -296,4 +329,35 @@ func validate(email, password string) error {
 	}
 
 	return nil
+}
+
+func validateRedirectURI(uri string, env string) bool {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+
+	if env == "prod" {
+		if u.Scheme != "https" {
+			return false
+		}
+	} else {
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return false
+		}
+	}
+
+	if u.Host == "" {
+		return false
+	}
+
+	if u.User != nil {
+		return false
+	}
+
+	if u.Fragment != "" {
+		return false
+	}
+
+	return true
 }

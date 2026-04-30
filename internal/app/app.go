@@ -8,51 +8,56 @@ import (
 
 	grpcApp "github.com/synnfluxx/TrustMeBroID/internal/app/grpc"
 	httpApp "github.com/synnfluxx/TrustMeBroID/internal/app/http"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage/postgres"
-	storage_redis "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
+	redisStorage "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
 )
+
+var ReaperDelay = 5 * time.Hour
 
 type App struct {
 	GRPCSrv *grpcApp.App
 	HTTPSrv *httpApp.App
 }
 
-func New(log *slog.Logger, grpcPort int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL time.Duration) (*App) {
+func New(log *slog.Logger, grpcPort, grpcRPS, httpRPS int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL time.Duration) *App {
 	storage, err := postgres.New(storagePath)
 	if err != nil {
 		panic(err)
 	}
 
-	redis, err := storage_redis.MustNewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries)
+	redis, err := redisStorage.NewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries)
 	if err != nil {
 		panic(err)
 	}
 
-	go func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(ReaperDelay)
+		defer ticker.Stop()
 		for {
-			log.Info("Trying to delete old RIP users")
-			deleted, err := storage.Reaper(context.Background())
-			if err != nil {
-				log.Warn("storage reaper error", sl.Err(err))
-			} else {
-				log.Info("storage reaper deleted successfully with users", slog.Attr{Key: "deleted users",Value: slog.AnyValue(deleted)})
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				log.Info("Trying to delete old RIP users")
+				deleted, err := storage.Reaper(context.Background())
+				if err != nil {
+					log.Warn("storage reaper error", sl.Err(err))
+				} else {
+					log.Info("storage reaper deleted successfully with users", slog.Attr{Key: "deleted users", Value: slog.AnyValue(deleted)})
+				}
 			}
-			time.Sleep(5*time.Hour)
-		}
-	}()
+		} //TODO: run in constructor
+	}(ctx)
 
-	authService, err := auth.New(log, storage, storage, storage, storage, storage, redis, accessTokenTTL, refreshTokenTTL)
-	if err != nil {
-		panic(err)
-	}
-
-	grpcApp := grpcApp.New(log, authService, grpcPort)
-	httpApp := httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL)
+	ph := encryptor.NewPasswordHasher()
+	authService := auth.New(log, storage, storage, storage, storage, redis, ph, accessTokenTTL, refreshTokenTTL)
 
 	return &App{
-		GRPCSrv: grpcApp,
-		HTTPSrv: httpApp,
+		GRPCSrv: grpcApp.New(log, authService, grpcPort, cancel, grpcRPS),
+		HTTPSrv: httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL, httpRPS),
 	}
 }

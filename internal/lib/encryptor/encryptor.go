@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-var lenErr = errors.New("masterkey must be 16 or 32 characters")
+var lenErr = errors.New("masterkey must be 16, 24 or 32 characters")
 
 func EncryptString(masterkey []byte, data []byte) (string, error) {
 	switch len(masterkey) {
@@ -70,4 +72,14 @@ func DecryptString(masterkey []byte, encoded string) (string, error) {
 	}
 
 	return string(plainText), nil
+}
+
+type PasswordHasher struct {}
+
+func NewPasswordHasher() *PasswordHasher {
+	return &PasswordHasher{}
+}
+
+func (ph *PasswordHasher) Compare(hash []byte, pw []byte) error {
+	return bcrypt.CompareHashAndPassword(hash, pw)
 }

@@ -71,12 +71,12 @@ func NewRefreshToken(userID, appID int64, refreshDuration time.Duration, appSecr
 func NewTokens(userID, appID int64, appSecret string, refreshDuration, accessDuration time.Duration) (accessToken, refreshToken string, err error) {
 	refreshToken, err = NewRefreshToken(userID, appID, refreshDuration, appSecret)
 	if err != nil {
-		return "", "", nil
+		return "", "", err
 	}
 
 	accessToken, err = NewAccessToken(userID, appID, accessDuration, appSecret)
 	if err != nil {
-		return "", "", nil
+		return "", "", err
 	}
 
 	return accessToken, refreshToken, err
