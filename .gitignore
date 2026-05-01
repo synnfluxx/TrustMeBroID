@@ -5,3 +5,4 @@ TODO
 .idea
 .vscode
 .DS_Store
+.gocache/

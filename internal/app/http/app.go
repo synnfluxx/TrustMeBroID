@@ -27,6 +27,7 @@ type App struct {
 	visitors      map[string]*Visitor
 	mu            sync.RWMutex
 	rps           int
+	burst         int
 	cleanerCancel context.CancelFunc
 }
 
@@ -47,7 +48,7 @@ type OAuthServer interface {
 	GitHubLoginHandler() http.HandlerFunc
 }
 
-func NewHTTPApp(storage handlers.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL time.Duration, rps int) *App {
+func NewHTTPApp(storage handlers.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL, cleanerDelay time.Duration, rps, burst int) *App {
 	bindAddr := os.Getenv("HTTP_BIND_ADDR")
 
 	app := &App{
@@ -57,11 +58,12 @@ func NewHTTPApp(storage handlers.Storage, log *slog.Logger, db oauth.TokenProvid
 		oAuthServer: handlers.NewHTTPHandlerServer(storage, db, log, accessTTL, refreshTTL),
 		visitors:    make(map[string]*Visitor),
 		rps:         rps,
+		burst:       burst,
 	}
 
 	app.configureRouter()
 	app.srv = &http.Server{Addr: bindAddr, Handler: app}
-	app.cleanerCancel = app.VisitorsCleaner(context.Background())
+	app.cleanerCancel = app.VisitorsCleaner(context.Background(), cleanerDelay)
 	return app
 }
 
@@ -73,11 +75,11 @@ func (a *App) configureRouter() {
 	a.router.HandleFunc("/auth/github/callback", a.oAuthServer.GitHubOAuthCallbackHandler())
 }
 
-func (a *App) VisitorsCleaner(pctx context.Context) context.CancelFunc {
+func (a *App) VisitorsCleaner(pctx context.Context, cleanerDelay time.Duration) context.CancelFunc {
 	ctx, cancel := context.WithCancel(pctx)
 
 	go func(ctx context.Context) {
-		ticker := time.NewTicker(3 * time.Hour) // TODO: migrate to config
+		ticker := time.NewTicker(cleanerDelay)
 		defer ticker.Stop()
 		for {
 			select {
@@ -111,7 +113,7 @@ func (a *App) getVisitor(ip string) *Visitor {
 	defer a.mu.Unlock()
 	if visitor, ok := a.visitors[ip]; !ok {
 		visitor = &Visitor{
-			limiter: rate.NewLimiter(rate.Limit(a.rps), a.rps),
+			limiter: rate.NewLimiter(rate.Limit(a.rps), a.burst),
 		}
 		visitor.lastSeen.Store(time.Now().Unix())
 		a.visitors[ip] = visitor

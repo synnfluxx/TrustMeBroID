@@ -21,8 +21,8 @@ type App struct {
 	ReaperCancel context.CancelFunc
 }
 
-func New(log *slog.Logger, authService authgrpc.Auth, port int, cancel context.CancelFunc, rps int) *App {
-	gRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(RateLimiterInterceptor(rate.NewLimiter(rate.Limit(rps), rps)), LoggerInterceptor(log), AdminRequestsInterceptor())) //TODO: add burst to config
+func New(log *slog.Logger, authService authgrpc.Auth, port int, cancel context.CancelFunc, rps, burst int) *App {
+	gRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(RateLimiterInterceptor(rate.NewLimiter(rate.Limit(rps), burst)), LoggerInterceptor(log), AdminRequestsInterceptor()))
 
 	authgrpc.Register(gRPCServer, authService)
 	reflection.Register(gRPCServer)

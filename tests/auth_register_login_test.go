@@ -1,14 +1,12 @@
 package tests
 
 import (
-	"log"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/synnfluxx/TrustMeBroID/tests/suite"
@@ -16,14 +14,12 @@ import (
 )
 
 const (
-	emptyAppID     = 0
 	passDefaultLen = 10
 	deltaSeconds   = 10
 )
 
 func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 	ctx, st := suite.New(t)
-	godotenv.Load()
 
 	email := gofakeit.Email()
 	username := gofakeit.Username()
@@ -53,36 +49,34 @@ func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, respLogin.GetRefreshToken())
 
 	refreshToken := respLogin.GetRefreshToken()
-	refreshTokenParsed, err := jwt.Parse(refreshToken, func(token *jwt.Token) (interface{}, error) {
+	refreshClaims := &jwt.RegisteredClaims{}
+	refreshTokenParsed, err := jwt.ParseWithClaims(refreshToken, refreshClaims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(st.AppSecret), nil
 	})
 	require.NoError(t, err)
+	require.True(t, refreshTokenParsed.Valid)
 
-	refreshClaims, ok := refreshTokenParsed.Claims.(jwt.RegisteredClaims)
-	require.True(t, ok)
-
-	uid, err := strconv.Atoi(refreshClaims.Subject)
+	uid, err := jwtSubjectToInt64(refreshClaims.Subject)
 	require.NoError(t, err)
 
-	assert.Equal(t, resp.GetUserId(), int64(uid))
-	assert.Equal(t, st.AppID, refreshClaims.Issuer)
+	assert.Equal(t, resp.GetUserId(), uid)
+	assert.Equal(t, int64ToString(st.AppID), refreshClaims.Issuer)
 
-	assert.InDelta(t, loginTime.Add(st.Cfg.AccessTokenTTL).Unix(), refreshClaims.ExpiresAt.Unix(), deltaSeconds)
+	assert.InDelta(t, loginTime.Add(st.Cfg.RefreshTokenTTL).Unix(), refreshClaims.ExpiresAt.Unix(), deltaSeconds)
 
 	token := respLogin.GetAccessToken()
-	tokenParsed, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+	claims := &jwt.RegisteredClaims{}
+	tokenParsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(st.AppSecret), nil
 	})
 	require.NoError(t, err)
+	require.True(t, tokenParsed.Valid)
 
-	claims, ok := tokenParsed.Claims.(jwt.RegisteredClaims)
-	require.True(t, ok)
-
-	uid, err = strconv.Atoi(claims.Subject)
+	uid, err = jwtSubjectToInt64(claims.Subject)
 	require.NoError(t, err)
 
-	assert.Equal(t, resp.GetUserId(), int64(uid))
-	assert.Equal(t, st.AppID, claims.Issuer)
+	assert.Equal(t, resp.GetUserId(), uid)
+	assert.Equal(t, int64ToString(st.AppID), claims.Issuer)
 
 	assert.InDelta(t, loginTime.Add(st.Cfg.AccessTokenTTL).Unix(), claims.ExpiresAt.Unix(), deltaSeconds)
 }
@@ -93,7 +87,6 @@ func TestRegisterLogin_Login_DuplicateRegistration(t *testing.T) {
 	email := gofakeit.Email()
 	username := gofakeit.Username()
 	pw := fakePassword()
-	log.Printf("%s %s", email, pw)
 
 	resp, err := st.AuthClient.Register(ctx, &ssov1.RegisterRequest{
 		Email:    email,
@@ -116,4 +109,12 @@ func TestRegisterLogin_Login_DuplicateRegistration(t *testing.T) {
 
 func fakePassword() string {
 	return gofakeit.Password(true, true, true, true, false, passDefaultLen)
+}
+
+func jwtSubjectToInt64(subject string) (int64, error) {
+	return strconv.ParseInt(subject, 10, 64)
+}
+
+func int64ToString(v int64) string {
+	return strconv.FormatInt(v, 10)
 }

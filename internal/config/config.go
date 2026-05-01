@@ -23,16 +23,20 @@ type GRPCConfig struct {
 	Port    int           `yaml:"port"`
 	Timeout time.Duration `yaml:"timeout"`
 	Rps     int           `yaml:"rps"` // Requests Per Second
+	Burst   int           `yaml:"burst"`
 }
 
 type HTTPConfig struct {
-	Rps int `yaml:"rps"`
+	Rps          int           `yaml:"rps"`
+	Burst        int           `yaml:"burst"`
+	CleanerDelay time.Duration `yaml:"visitor_cleaner_delay"`
 }
 
 type PostgresConfig struct {
-	Port             int    `yaml:"port"`
-	Host             string `yaml:"host"`
-	ConnectionString string `yaml:"-"`
+	Port             int           `yaml:"port"`
+	Host             string        `yaml:"host"`
+	ConnectionString string        `yaml:"-"`
+	ReaperDelay      time.Duration `yaml:"reaper_delay"`
 }
 
 type RedisConfig struct {
@@ -73,7 +77,7 @@ func MustLoadByPath(path string) *Config {
 	}
 
 	cfg.DB.mustSetConnectionString()
-	
+
 	os.Setenv("ENV", cfg.Env)
 
 	return &cfg

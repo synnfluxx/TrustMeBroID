@@ -15,14 +15,12 @@ import (
 	redisStorage "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
 )
 
-var ReaperDelay = 5 * time.Hour
-
 type App struct {
 	GRPCSrv *grpcApp.App
 	HTTPSrv *httpApp.App
 }
 
-func New(log *slog.Logger, grpcPort, grpcRPS, httpRPS int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL time.Duration) *App {
+func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration) *App {
 	storage, err := postgres.New(storagePath)
 	if err != nil {
 		panic(err)
@@ -35,7 +33,7 @@ func New(log *slog.Logger, grpcPort, grpcRPS, httpRPS int, storagePath string, r
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func(ctx context.Context) {
-		ticker := time.NewTicker(ReaperDelay)
+		ticker := time.NewTicker(reaperDelay)
 		defer ticker.Stop()
 		for {
 			select {
@@ -50,14 +48,14 @@ func New(log *slog.Logger, grpcPort, grpcRPS, httpRPS int, storagePath string, r
 					log.Info("storage reaper deleted successfully with users", slog.Attr{Key: "deleted users", Value: slog.AnyValue(deleted)})
 				}
 			}
-		} //TODO: run in constructor
+		}
 	}(ctx)
 
 	ph := encryptor.NewPasswordHasher()
 	authService := auth.New(log, storage, storage, storage, storage, redis, ph, accessTokenTTL, refreshTokenTTL)
 
 	return &App{
-		GRPCSrv: grpcApp.New(log, authService, grpcPort, cancel, grpcRPS),
-		HTTPSrv: httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL, httpRPS),
+		GRPCSrv: grpcApp.New(log, authService, grpcPort, cancel, grpcRPS, grpcBurst),
+		HTTPSrv: httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL, visitorCleanerDelay, httpRPS, httpBurst),
 	}
 }

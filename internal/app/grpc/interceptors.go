@@ -20,6 +20,7 @@ var adminMethods = []string{
 	ssov1.Auth_DeleteAdmin_FullMethodName,
 	ssov1.Auth_DeleteApp_FullMethodName,
 	ssov1.Auth_UpdateRefreshToken_FullMethodName,
+	ssov1.Auth_MakeAdmin_FullMethodName,
 }
 
 func isAdminMethod(method string) bool {
