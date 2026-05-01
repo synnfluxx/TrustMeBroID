@@ -3,6 +3,7 @@ package httpApp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,7 +24,7 @@ type App struct {
 	log           *slog.Logger
 	bindAddr      string
 	srv           *http.Server
-	oAuthServer   OAuthServer
+	oAuthServer   GitHubOAuthServer
 	visitors      map[string]*Visitor
 	mu            sync.RWMutex
 	rps           int
@@ -43,19 +44,21 @@ const (
 	ctxKeyRequestID
 )
 
-type OAuthServer interface {
-	GitHubOAuthCallbackHandler() http.HandlerFunc
-	GitHubLoginHandler() http.HandlerFunc
+type GitHubOAuthServer interface {
+	CallbackHandler() http.HandlerFunc
+	LoginHandler() http.HandlerFunc
 }
 
-func NewHTTPApp(storage handlers.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL, cleanerDelay time.Duration, rps, burst int) *App {
+func NewHTTPApp(storage oauth.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL, cleanerDelay time.Duration, rps, burst int) *App {
 	bindAddr := os.Getenv("HTTP_BIND_ADDR")
+
+	GitHubOAuthService := oauth.New(oauth.NewGithubConfig(), storage, db, log)
 
 	app := &App{
 		router:      mux.NewRouter(),
 		log:         log,
 		bindAddr:    bindAddr,
-		oAuthServer: handlers.NewHTTPHandlerServer(storage, db, log, accessTTL, refreshTTL),
+		oAuthServer: handlers.NewHTTPOAuthServer(GitHubOAuthService, log, accessTTL, refreshTTL),
 		visitors:    make(map[string]*Visitor),
 		rps:         rps,
 		burst:       burst,
@@ -71,8 +74,8 @@ func (a *App) configureRouter() {
 	a.router.Use(a.setRequestID)
 	a.router.Use(a.logRequest)
 	a.router.Use(a.limit)
-	a.router.HandleFunc("/auth/github/login", a.oAuthServer.GitHubLoginHandler())
-	a.router.HandleFunc("/auth/github/callback", a.oAuthServer.GitHubOAuthCallbackHandler())
+	a.router.HandleFunc(fmt.Sprintf("/auth/%s/login", "github"), a.oAuthServer.LoginHandler())
+	a.router.HandleFunc(fmt.Sprintf("/auth/%s/callback", "github"), a.oAuthServer.CallbackHandler())
 }
 
 func (a *App) VisitorsCleaner(pctx context.Context, cleanerDelay time.Duration) context.CancelFunc {

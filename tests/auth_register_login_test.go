@@ -50,7 +50,7 @@ func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 
 	refreshToken := respLogin.GetRefreshToken()
 	refreshClaims := &jwt.RegisteredClaims{}
-	refreshTokenParsed, err := jwt.ParseWithClaims(refreshToken, refreshClaims, func(token *jwt.Token) (interface{}, error) {
+	refreshTokenParsed, err := jwt.ParseWithClaims(refreshToken, refreshClaims, func(token *jwt.Token) (any, error) {
 		return []byte(st.AppSecret), nil
 	})
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestRegisterLogin_Login_HappyPath(t *testing.T) {
 
 	token := respLogin.GetAccessToken()
 	claims := &jwt.RegisteredClaims{}
-	tokenParsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
+	tokenParsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
 		return []byte(st.AppSecret), nil
 	})
 	require.NoError(t, err)

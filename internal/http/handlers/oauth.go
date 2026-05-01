@@ -2,71 +2,23 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
-	"github.com/synnfluxx/TrustMeBroID/internal/services/oauth"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
 )
 
-type Storage interface {
-	SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
-	App(ctx context.Context, appID int64) (models.App, error)
-	UserByEmail(ctx context.Context, email string, appID int64) (models.User, error)
-}
-
-type GitHubUser struct {
-	Email    string `json:"email"`
-	Username string `json:"login"`
-}
-
 type OAuthService interface {
-	Login() (string, string)
-	Callback(code string, appID int64, tokenTTL time.Duration) (accessToken string, refreshToken string, err error)
+	Login(ctx context.Context, appID int64) (string, string, error)
+	Callback(ctx context.Context, code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, redirectURI string, err error)
 }
 
-type Server struct {
-	log             *slog.Logger
-	accessTokenTTL  time.Duration
-	refreshTokenTTL time.Duration
-	GithubOAuth     *oauth.OAuthService
-	Storage         Storage
-}
-
-func NewHTTPHandlerServer(storage Storage, tokenProvider oauth.TokenProvider, log *slog.Logger, accessTokenTTL, refreshTokenTTL time.Duration) *Server {
-	return &Server{
-		log:             log,
-		accessTokenTTL:  accessTokenTTL,
-		refreshTokenTTL: refreshTokenTTL,
-		GithubOAuth:     oauth.New(oauth.NewGithubConfig(), storage, tokenProvider, log),
-		Storage:         storage,
-	}
-}
-
-func (s *Server) jsonResponce(w http.ResponseWriter, status int, payload any) {
-	resp, err := json.Marshal(payload)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write([]byte(resp))
-}
-
-func (s *Server) respondError(w http.ResponseWriter, code int, message string) {
-	s.jsonResponce(w, code, map[string]string{"error": message})
-}
-
-func (s *Server) GitHubLoginHandler() http.HandlerFunc {
+func (s *Server) LoginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var appID string
 		if appID = r.URL.Query().Get("app_id"); appID == "" {
@@ -80,75 +32,68 @@ func (s *Server) GitHubLoginHandler() http.HandlerFunc {
 			return
 		}
 
-		app, err := s.Storage.App(context.Background(), int64(aid))
+		state, url, err := s.OAuth.Login(r.Context(), int64(aid))
 		if err != nil {
-			s.respondError(w, http.StatusBadRequest, "invalid app_id")
-			return
+			if errors.Is(err, storage.ErrAppNotFound) {
+				s.respondError(w, http.StatusBadRequest, "invalid app_id")
+				return
+			}
 		}
 
-		state, url := s.GithubOAuth.Login(int64(aid))
-
 		s.setState(w, state)
-		s.setURI(app.RedirectURI, w)
 
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 	}
 }
 
-func (s *Server) GitHubOAuthCallbackHandler() http.HandlerFunc {
+func (s *Server) CallbackHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		oauthState, err := r.Cookie("oauth_state")
+		appID, err := s.getAndValidateState(r)
 		if err != nil {
-			s.respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		uri, err := r.Cookie("uri")
-		if err != nil {
-			s.respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		state := r.URL.Query().Get("state")
-		parts := strings.Split(state, ":")
-		if len(parts) < 2 {
-			s.respondError(w, http.StatusBadRequest, "invalid state")
-			return
-		}
-
-		if len(parts[1]) == 0 {
-			s.respondError(w, http.StatusBadRequest, "invalid state")
-			return
-		}
-
-		appID, err := strconv.Atoi(parts[1])
-		if err != nil {
-			s.log.Warn("str to int conv failed: ", sl.Err(err))
-			s.respondError(w, http.StatusBadRequest, "bad request")
-			return
-		}
-		if oauthState.Value != state {
+			s.log.Warn("state validation error", sl.Err(err))
 			s.respondError(w, http.StatusBadRequest, "bad request")
 			return
 		}
 
-		token, refreshToken, err := s.GithubOAuth.Callback(r.Context(), r.FormValue("code"), int64(appID), s.accessTokenTTL, s.refreshTokenTTL)
+		token, refreshToken, uri, err := s.OAuth.Callback(r.Context(), r.FormValue("code"), appID, s.accessTokenTTL, s.refreshTokenTTL)
 		if err != nil {
-			if errors.Is(err, oauth.ErrInvalidFields) {
-				s.log.Warn("github oauth callback error: ", sl.Err(err))
-				s.respondError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-
 			s.log.Warn("get tokens error", sl.Err(err))
 			s.respondError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		s.setRefershToken(w, refreshToken)
-		redirectURL := fmt.Sprintf("%s?token=%s", uri.Value, token)
+		redirectURL := fmt.Sprintf("%s?token=%s", uri, token)
 		http.Redirect(w, r, redirectURL, http.StatusPermanentRedirect)
 	}
+}
+
+func (s *Server) getAndValidateState(r *http.Request) (int64, error) {
+	oauthState, err := r.Cookie("oauth_state")
+	if err != nil {
+		return 0, err
+	}
+
+	state := r.URL.Query().Get("state")
+	parts := strings.Split(state, ":")
+	if len(parts) < 2 {
+		return 0, err
+	}
+
+	if len(parts[1]) == 0 {
+		return 0, err
+	}
+
+	appID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, err
+	}
+	
+	if oauthState.Value != state {
+		return 0, err
+	}
+
+	return int64(appID), nil
 }
 
 func (s *Server) setState(w http.ResponseWriter, state string) {
@@ -157,17 +102,6 @@ func (s *Server) setState(w http.ResponseWriter, state string) {
 		Value:    state,
 		HttpOnly: true,
 		MaxAge:   600,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   true,
-	}
-	http.SetCookie(w, cookie)
-}
-
-func (s *Server) setURI(uri string, w http.ResponseWriter) {
-	cookie := &http.Cookie{
-		Name:     "uri",
-		Value:    uri,
-		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   true,
 	}

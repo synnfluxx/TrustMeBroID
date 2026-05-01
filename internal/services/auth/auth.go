@@ -46,7 +46,7 @@ type Auth struct {
 
 type UserSaver interface {
 	SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (uid int64, err error)
-	SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
+	//SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
 }
 
 type UserProvider interface {

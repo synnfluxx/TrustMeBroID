@@ -82,6 +82,10 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 			return 0, fmt.Errorf("%s: %w", op, storage.ErrUserExists)
 		}
 
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return 0, fmt.Errorf("%s: %w", op, storage.ErrAppNotFound)
+		}
+
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
@@ -94,7 +98,7 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 	row := s.db.QueryRowContext(ctx, query, args...)
 
 	var user models.User
-	err := row.Scan(&user.ID, &user.Email, &user.PassHash, &user.DeletedAt)
+	err := row.Scan(&user.ID, &user.Email, &user.Username, &user.PassHash, &user.DeletedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
@@ -112,7 +116,7 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 
 func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2",
 		userID,
 		appID,
 	)
@@ -120,7 +124,7 @@ func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.U
 
 func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2",
 		email,
 		appID,
 	)
@@ -128,7 +132,7 @@ func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (m
 
 func (s *Storage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2",
 		appID,
 		username,
 	)
@@ -303,7 +307,7 @@ func (s *Storage) DeleteApp(ctx context.Context, appID int64) error {
 	return nil
 }
 
-func (s *Storage) SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error) {
+func (s *Storage) FindOrCreateOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error) {
 	const op = "storage.postgres.SaveOAuthUser"
 
 	var uid int64
@@ -312,7 +316,12 @@ func (s *Storage) SaveOAuthUser(ctx context.Context, email, username string, app
 		var pqErr *pq.Error
 
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserExists)
+			usr, err := s.UserByEmail(ctx, email, appID)
+			if err != nil {
+				return models.User{}, fmt.Errorf("%s: %w", op, err)
+			}
+
+			return usr, nil
 		}
 
 		return models.User{}, fmt.Errorf("%s: %w", op, err)
