@@ -61,7 +61,7 @@ func (s *Storage) SaveRefreshToken(ctx context.Context, token string, userID int
 	const op = "storage.Redis.SaveRefreshToken"
 
 	_, err := saveRefreshTokenScript.Run(ctx, s.rdb, []string{token}, userID, appID, ttl.Seconds()).Result()
-	
+
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -76,9 +76,20 @@ func (s *Storage) SetNewRefreshToken(ctx context.Context, oldToken string, newTo
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
-	
+
 	if res.(int64) == 0 {
 		return fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
+	}
+
+	return nil
+}
+
+func (s *Storage) Logout(ctx context.Context, token string) error {
+	const op = "storage.Redis.Logout"
+
+	err := s.rdb.Del(ctx, token)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	return nil

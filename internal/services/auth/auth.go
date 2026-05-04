@@ -76,6 +76,7 @@ type JWTProvider interface {
 	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
 	SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error
 	GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error)
+	Logout(ctx context.Context, token string) error
 }
 
 type PasswordVerifier interface {
@@ -115,7 +116,7 @@ func (a *Auth) MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, e
 }
 
 func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (string, string, error) {
-	const op = "auth.Login (ByEmail)"
+	const op = "auth.Login"
 	log := a.log.With("op", op)
 	log.Info("attempting to login user")
 
@@ -192,6 +193,20 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	}
 
 	return accessToken, refreshToken, nil
+}
+
+func (a *Auth) Logout(ctx context.Context, token string) error {
+	const op = "auth.Logout"
+	log := a.log.With("op", op)
+	log.Info("attempting to logout user")
+
+	
+	if err := a.jwtProvider.Logout(ctx, token); err != nil {
+		log.Warn("error logout user", sl.Err(err))
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	return nil
 }
 
 func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {

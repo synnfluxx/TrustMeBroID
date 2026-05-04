@@ -37,6 +37,7 @@ type Auth interface {
 	RefreshToken(ctx context.Context, refreshToken string) (string, error)
 	UpdateRefreshToken(ctx context.Context, token string) (string, error)
 	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
+	Logout(ctx context.Context, token string) error
 }
 
 type serverAPI struct {
@@ -53,7 +54,7 @@ func (s *serverAPI) MakeAdmin(ctx context.Context, req *ssov1.MakeAdminRequest) 
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	
+
 	return &ssov1.MakeAdminResponse{
 		UserId: uid,
 	}, nil
@@ -241,6 +242,14 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 	default:
 		return nil, status.Error(codes.InvalidArgument, "invalid identifier")
 	}
+}
+
+func (s *serverAPI) Logout(ctx context.Context, req *ssov1.LogoutRequest) (*ssov1.Empty, error) { //TODO: DONT tested
+	if err := s.auth.Logout(ctx, req.GetRefreshToken()); err != nil {
+		return nil, status.Error(codes.Internal, "internal server error")
+	}
+
+	return &ssov1.Empty{}, nil
 }
 
 func (s *serverAPI) DeleteAdmin(ctx context.Context, req *ssov1.DeleteAdminRequest) (*ssov1.Empty, error) {

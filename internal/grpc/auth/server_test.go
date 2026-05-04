@@ -66,7 +66,11 @@ func (m *MockAuth) MakeAdmin(ctx context.Context, userID, appID int64) (int64, e
 } // DON'T TESTED
 
 func (m *MockAuth) RegisterApp(ctx context.Context, name, redirectURI string) (int64, string, error) {
-	panic("implemet me!")
+	panic("implement me!")
+} // DON'T TESTED
+
+func (m *MockAuth) Logout(ctx context.Context, token string) error {
+	panic("implement me")
 } // DON'T TESTED
 
 func TestLogin(t *testing.T) {

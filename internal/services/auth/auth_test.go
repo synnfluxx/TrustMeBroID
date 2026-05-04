@@ -131,6 +131,10 @@ func (m *MockJWTProvider) GetRefreshTokenFields(ctx context.Context, token strin
 	return fields, args.Error(1)
 }
 
+func (m *MockJWTProvider) Logout(ctx context.Context, token string) error {
+	panic("implement me!")
+} // DON'T TESTED
+
 type MockPasswordVerifier struct {
 	mock.Mock
 }
