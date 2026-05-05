@@ -87,9 +87,9 @@ func (s *Storage) SetNewRefreshToken(ctx context.Context, oldToken string, newTo
 func (s *Storage) Logout(ctx context.Context, token string) error {
 	const op = "storage.Redis.Logout"
 
-	err := s.rdb.Del(ctx, token)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
+	cmdErr := s.rdb.Del(ctx, token)
+	if cmdErr.Err() != nil {
+		return fmt.Errorf("%s: %w", op, cmdErr.Err())
 	}
 
 	return nil

@@ -245,6 +245,10 @@ func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest
 }
 
 func (s *serverAPI) Logout(ctx context.Context, req *ssov1.LogoutRequest) (*ssov1.Empty, error) { //TODO: DONT tested
+	if req.GetRefreshToken() == "" {
+		return nil, status.Error(codes.InvalidArgument, "refresh_token is required")
+	}
+
 	if err := s.auth.Logout(ctx, req.GetRefreshToken()); err != nil {
 		return nil, status.Error(codes.Internal, "internal server error")
 	}
