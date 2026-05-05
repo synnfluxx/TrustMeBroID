@@ -15,23 +15,9 @@ type JWTRepository interface {
 	GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error)
 }
 
-func NewToken(user models.User, app models.App, duration time.Duration) (string, error) {
-	token := jwt.New(jwt.SigningMethodHS256)
-
-	claims := token.Claims.(jwt.MapClaims)
-
-	claims["uid"] = user.ID
-	claims["email"] = user.Email
-	claims["username"] = user.Username
-	claims["exp"] = time.Now().Add(duration).Unix()
-	claims["app_id"] = app.ID
-
-	tokenString, err := token.SignedString([]byte(app.Secret))
-	if err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
+type OAuthCustomClaims struct {
+	AvatarPath string `json:"avatar_path"`
+	jwt.RegisteredClaims
 }
 
 func NewAccessToken(userID, appID int64, accessDuration time.Duration, appSecret string) (accessToken string, err error) {
@@ -40,6 +26,26 @@ func NewAccessToken(userID, appID int64, accessDuration time.Duration, appSecret
 		Subject:   fmt.Sprint(userID),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	accessToken, err = token.SignedString([]byte(appSecret))
+	if err != nil {
+		return accessToken, err
+	}
+
+	return accessToken, err
+}
+
+func NewOAuthAccessToken(userID, appID int64, accessDuration time.Duration, appSecret, avatarPath string) (accessToken string, err error) {
+	claims := &OAuthCustomClaims{
+		AvatarPath: avatarPath,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    fmt.Sprint(appID),
+			Subject:   fmt.Sprint(userID),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),	
+		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -75,6 +81,20 @@ func NewTokens(userID, appID int64, appSecret string, refreshDuration, accessDur
 	}
 
 	accessToken, err = NewAccessToken(userID, appID, accessDuration, appSecret)
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, err
+}
+
+func NewOAuthTokens(userID, appID int64, appSecret, avatarPath string, refreshDuration, accessDuration time.Duration) (accessToken, refreshToken string, err error) {
+	refreshToken, err = NewRefreshToken(userID, appID, refreshDuration, appSecret)
+	if err != nil {
+		return "", "", err
+	}
+
+	accessToken, err = NewOAuthAccessToken(userID, appID, accessDuration, appSecret, avatarPath)
 	if err != nil {
 		return "", "", err
 	}

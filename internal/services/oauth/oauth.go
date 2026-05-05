@@ -81,7 +81,7 @@ func (o *OAuthService) Callback(ctx context.Context, code string, appID int64, a
 		return "", "", "", err
 	}
 
-	accessToken, refreshToken, err = jwt.NewTokens(usr.ID, app.ID, app.Secret, refreshTTL, accessTTL)
+	accessToken, refreshToken, err = jwt.NewOAuthTokens(usr.ID, app.ID, app.Secret, oauthUser.Avatar, refreshTTL, accessTTL)
 	if err != nil {
 		o.log.Warn("oauth callback get jwt token error: ", sl.Err(err))
 		return "", "", "", err

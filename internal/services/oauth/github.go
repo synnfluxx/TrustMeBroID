@@ -16,9 +16,9 @@ type GithubOAuth struct {
 }
 
 type GithubUser struct {
-	Email    string `json:"email"`
-	Username string `json:"login"`
-	//TODO: avatar path
+	Email      string `json:"email"`
+	Username   string `json:"login"`
+	AvatarPath string `json:"avatar_url"`
 }
 
 type GithubEmail struct {
@@ -55,8 +55,9 @@ func (g *GithubOAuth) Callback(ctx context.Context, code string) (*OAuthUserDeta
 	}
 
 	return &OAuthUserDetails{
-		Email: usr.Email,
+		Email:    usr.Email,
 		Username: usr.Username,
+		Avatar:   usr.AvatarPath,
 	}, nil
 }
 
@@ -89,7 +90,7 @@ func (g *GithubOAuth) getUserDataFromGitHub(ctx context.Context, code string) (*
 	return usr, err
 }
 
-func (g *GithubOAuth) getUserEmail(ctx context.Context, client *http.Client) (string, error){
+func (g *GithubOAuth) getUserEmail(ctx context.Context, client *http.Client) (string, error) {
 	resp, err := client.Get("https://api.github.com/user/emails")
 	if err != nil {
 		return "", err
