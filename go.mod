@@ -15,6 +15,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/mo7zayed/reqip v0.0.0-20221026055958-113c317cbfa3
 	github.com/redis/go-redis/v9 v9.18.0
+	github.com/samber/slog-chi v1.19.1
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	gitlab.com/synnfluxx/protos v0.0.0-20260504180442-237cb15e4544
@@ -44,6 +45,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/go-chi/chi/v5 v5.2.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
