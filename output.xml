@@ -1,0 +1,4457 @@
+<onefilellm_output>
+<source type="local_folder" path=".">
+
+<file path="cmd/sso/main.go">
+package main
+
+import (
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/dusted-go/logging/v2/handlers/prettylog"
+	"github.com/joho/godotenv"
+	"github.com/synnfluxx/TrustMeBroID/internal/app"
+	"github.com/synnfluxx/TrustMeBroID/internal/config"
+)
+
+const (
+	envLocal = "local"
+	envDev   = "dev"
+	envProd  = "prod"
+)
+
+func init() {
+	godotenv.Load()
+}
+
+func main() {
+	cfg := config.MustLoad()
+
+	log := setupLogger(cfg.Env)
+
+	log.Info("starting sso server")
+
+	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
+
+	go application.GRPCSrv.MustRun()
+	go application.HTTPSrv.MustRun()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	sig := <-stop
+	log.Info("stopping application", slog.String("signal", sig.String()))
+
+	application.GRPCSrv.Stop()
+	err := application.HTTPSrv.Stop()
+	if err != nil {
+		log.Warn("error while trying to close http server")
+	}
+
+	log.Info("application stop")
+}
+
+func setupLogger(env string) *slog.Logger {
+	var handler slog.Handler
+	switch env {
+	case envLocal:
+		handler = prettylog.NewHandler(&slog.HandlerOptions{Level: slog.LevelDebug})
+	case envDev:
+		handler = prettylog.NewHandler(&slog.HandlerOptions{Level: slog.LevelDebug})
+	case envProd:
+		handler = prettylog.NewHandler(&slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+
+	log := slog.New(handler)
+
+	return log
+}
+
+</file>
+
+<file path="migrations/000002_create_admins_table.up.sql">
+CREATE TABLE IF NOT EXISTS admins (
+    id    SERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    username TEXT NOT NULL,
+    app_id INTEGER NOT NULL,
+    FOREIGN KEY (email, app_id) REFERENCES users(email, app_id) ON UPDATE CASCADE ON DELETE CASCADE,
+
+    UNIQUE(email, app_id),
+    UNIQUE(username, app_id)
+);
+
+</file>
+
+<file path="migrations/000001_create_users_table.down.sql">
+-- ./migrations/1_init.down.sql
+
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS apps;
+
+</file>
+
+<file path="migrations/000002_create_admins_table.down.sql">
+DROP TABLE admins;
+</file>
+
+<file path="migrations/000001_create_users_table.up.sql">
+-- migrations/1_init.up.sql
+
+CREATE TABLE IF NOT EXISTS apps
+(
+    id     SERIAL PRIMARY KEY,
+    name   TEXT NOT NULL UNIQUE,
+    secret TEXT NOT NULL UNIQUE,
+    redirect_uri TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS users
+(
+    id           SERIAL PRIMARY KEY,
+    email        TEXT    NOT NULL,
+    username     TEXT    NOT NULL,
+    pass_hash    BYTEA,
+    app_id       INTEGER NOT NULL,
+    deleted_at   TIMESTAMP,
+
+    UNIQUE(email, app_id),
+    UNIQUE(username, app_id),
+
+    CONSTRAINT fk_app
+        FOREIGN KEY (app_id)
+        REFERENCES apps (id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_email ON users (app_id, email);
+
+</file>
+
+<file path="Taskfile.yaml">
+version: "3"
+
+tasks:
+    migrateUp:
+        aliases:
+            - up
+        desc: "Apply all migrations"
+        cmds:
+            - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations
+    migrateDown:
+        aliases:
+            - down
+        desc: "Rollback all migrations"
+        cmds:
+            - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations -down
+
+    build:
+        aliases:
+            - bl
+        desc: "Build main.go"
+        cmds:
+            - go build -o bin/sso cmd/sso/main.go
+    compose:
+        desc: "docker-compose"
+        cmds:
+            - docker-compose down -v
+            - docker-compose up -d --build
+
+</file>
+
+<file path="config/local.yaml">
+env: 'local' # dev, prod
+access_token_ttl: 5m
+refresh_token_ttl: 168h
+grpc:
+  port: 1337
+  timeout: 1488h
+  rps: 3
+  burst: 6
+postgres:
+  port: 5432
+  host: 'postgres-sso'
+  reaper_delay: 3h
+redis:
+  port: 6379
+  host: 'redis-sso'
+  timeout: 15s
+  retries: 3
+http:
+  rps: 3
+  burst: 6
+  visitor_cleaner_delay: 3h
+
+</file>
+
+<file path="tests/migrations/1_newApp.up.sql">
+INSERT INTO apps (id, name, secret)
+VALUES (1, 'test', 'test-secret')
+ON CONFLICT DO NOTHING;
+</file>
+
+<file path="tests/migrations/1_newApp.down.sql">
+
+</file>
+
+<file path="tests/suite/suite.go">
+package suite
+
+import (
+	"context"
+	"errors"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/brianvoe/gofakeit/v7"
+	"github.com/joho/godotenv"
+	"github.com/synnfluxx/TrustMeBroID/internal/config"
+	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+)
+
+const (
+	grpcHost = "localhost"
+)
+
+type Suite struct {
+	*testing.T
+	Cfg        *config.Config
+	AuthClient ssov1.AuthClient
+	AppID      int64
+	AppSecret  string
+}
+
+func New(t *testing.T) (context.Context, *Suite) {
+	t.Helper()
+	t.Parallel()
+
+	_ = godotenv.Load("../.env", ".env")
+	cfg := config.MustLoadByPath("../config/local.yaml")
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), cfg.GRPC.Timeout)
+
+	cc, err := grpc.NewClient(grpcAddress(cfg), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc server connection failed: %v", err)
+	}
+
+	authClient := ssov1.NewAuthClient(cc)
+	appName := "test-" + gofakeit.LetterN(8) + strconv.FormatInt(time.Now().UnixNano(), 10)
+	appRedirectURI := "http://localhost:3000/auth/callback"
+
+	resp, err := authClient.RegisterApp(adminContext(context.Background()), &ssov1.RegisterAppRequest{
+		AppName:     appName,
+		RedirectUri: appRedirectURI,
+	})
+	if err != nil {
+		if serverUnavailable(err) {
+			cancelCtx()
+			_ = cc.Close()
+			t.Skipf("integration server is unavailable at %s: %v", grpcAddress(cfg), err)
+		}
+		t.Fatalf("test app creating error: %v", err)
+	}
+
+	t.Cleanup(func() {
+		t.Helper()
+		cancelCtx()
+		_ = cc.Close()
+
+		if _, err := authClient.DeleteApp(adminContext(context.Background()), &ssov1.DeleteAppRequest{
+			AppId: resp.AppId,
+		}); err != nil {
+			t.Fatalf("error while deleting app: %v", err)
+		}
+	})
+
+	return ctx, &Suite{
+		T:          t,
+		Cfg:        cfg,
+		AuthClient: ssov1.NewAuthClient(cc),
+		AppID:      resp.GetAppId(),
+		AppSecret:  resp.GetSecret(),
+	}
+}
+
+func grpcAddress(cfg *config.Config) string {
+	return net.JoinHostPort(grpcHost, strconv.Itoa(int(cfg.GRPC.Port)))
+}
+
+func adminContext(ctx context.Context) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "x-admin-token", os.Getenv("ADMIN_TOKEN"))
+}
+
+func serverUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(err.Error(), "connection refused") ||
+		strings.Contains(err.Error(), "connection error") ||
+		strings.Contains(err.Error(), "Error while dialing")
+}
+
+</file>
+
+<file path="tests/auth_register_login_test.go">
+package tests
+
+import (
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/brianvoe/gofakeit/v7"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/synnfluxx/TrustMeBroID/tests/suite"
+	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+)
+
+const (
+	passDefaultLen = 10
+	deltaSeconds   = 10
+)
+
+func TestRegisterLogin_Login_HappyPath(t *testing.T) {
+	ctx, st := suite.New(t)
+
+	email := gofakeit.Email()
+	username := gofakeit.Username()
+	pw := fakePassword()
+
+	resp, err := st.AuthClient.Register(ctx, &ssov1.RegisterRequest{
+		Email:    email,
+		Username: username,
+		Password: pw,
+		AppId:    st.AppID,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.GetUserId())
+
+	respLogin, err := st.AuthClient.Login(ctx, &ssov1.LoginRequest{
+		Identifier: &ssov1.LoginRequest_Email{
+			Email: email,
+		},
+		Password: pw,
+		AppId:    st.AppID,
+	})
+
+	loginTime := time.Now()
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, respLogin.GetAccessToken())
+	assert.NotEmpty(t, respLogin.GetRefreshToken())
+
+	refreshToken := respLogin.GetRefreshToken()
+	refreshClaims := &jwt.RegisteredClaims{}
+	refreshTokenParsed, err := jwt.ParseWithClaims(refreshToken, refreshClaims, func(token *jwt.Token) (any, error) {
+		return []byte(st.AppSecret), nil
+	})
+	require.NoError(t, err)
+	require.True(t, refreshTokenParsed.Valid)
+
+	uid, err := jwtSubjectToInt64(refreshClaims.Subject)
+	require.NoError(t, err)
+
+	assert.Equal(t, resp.GetUserId(), uid)
+	assert.Equal(t, int64ToString(st.AppID), refreshClaims.Issuer)
+
+	assert.InDelta(t, loginTime.Add(st.Cfg.RefreshTokenTTL).Unix(), refreshClaims.ExpiresAt.Unix(), deltaSeconds)
+
+	token := respLogin.GetAccessToken()
+	claims := &jwt.RegisteredClaims{}
+	tokenParsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
+		return []byte(st.AppSecret), nil
+	})
+	require.NoError(t, err)
+	require.True(t, tokenParsed.Valid)
+
+	uid, err = jwtSubjectToInt64(claims.Subject)
+	require.NoError(t, err)
+
+	assert.Equal(t, resp.GetUserId(), uid)
+	assert.Equal(t, int64ToString(st.AppID), claims.Issuer)
+
+	assert.InDelta(t, loginTime.Add(st.Cfg.AccessTokenTTL).Unix(), claims.ExpiresAt.Unix(), deltaSeconds)
+}
+
+func TestRegisterLogin_Login_DuplicateRegistration(t *testing.T) {
+	ctx, st := suite.New(t)
+
+	email := gofakeit.Email()
+	username := gofakeit.Username()
+	pw := fakePassword()
+
+	resp, err := st.AuthClient.Register(ctx, &ssov1.RegisterRequest{
+		Email:    email,
+		Username: username,
+		Password: pw,
+		AppId:    st.AppID,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.GetUserId())
+
+	_, err = st.AuthClient.Register(ctx, &ssov1.RegisterRequest{
+		Email:    email,
+		Username: username,
+		Password: pw,
+		AppId:    st.AppID,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+func fakePassword() string {
+	return gofakeit.Password(true, true, true, true, false, passDefaultLen)
+}
+
+func jwtSubjectToInt64(subject string) (int64, error) {
+	return strconv.ParseInt(subject, 10, 64)
+}
+
+func int64ToString(v int64) string {
+	return strconv.FormatInt(v, 10)
+}
+
+</file>
+
+<file path="internal/app/grpc/interceptors.go">
+package grpcApp
+
+import (
+	"context"
+	"log/slog"
+	"slices"
+	"time"
+
+	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+)
+
+var adminMethods = []string{
+	ssov1.Auth_RegisterApp_FullMethodName,
+	ssov1.Auth_DeleteUser_FullMethodName,
+	ssov1.Auth_DeleteAdmin_FullMethodName,
+	ssov1.Auth_DeleteApp_FullMethodName,
+	ssov1.Auth_UpdateRefreshToken_FullMethodName,
+	ssov1.Auth_MakeAdmin_FullMethodName,
+	ssov1.Auth_Logout_FullMethodName,
+}
+
+func isAdminMethod(method string) bool {
+	return slices.Contains(adminMethods, method)
+}
+
+func AdminRequestsInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		if isAdminMethod(info.FullMethod) {
+			md, ok := metadata.FromIncomingContext(ctx)
+			if !ok {
+				return nil, status.Error(codes.PermissionDenied, "error while extracting metadata")
+			}
+
+			tokens := md["x-admin-token"]
+			if len(tokens) == 0 {
+				return nil, status.Error(codes.PermissionDenied, "auth endpoinds must be with x-admin-token field")
+			}
+
+			if !validateToken(tokens[0]) {
+				return nil, status.Error(codes.PermissionDenied, "invalid token")
+			}
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+func LoggerInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		start := time.Now()
+
+		resp, err = handler(ctx, req)
+		duration := time.Since(start)
+
+		if err != nil {
+			log.Error("grpc request", "method", info.FullMethod, "duration", duration.Milliseconds(), "error", err)
+		} else {
+			log.Info("grpc request", "method", info.FullMethod, "duration", duration.Milliseconds())
+		}
+
+		return resp, err
+	}
+}
+
+func RateLimiterInterceptor(limiter *rate.Limiter) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		if !limiter.Allow() {
+			return nil, status.Errorf(codes.ResourceExhausted, "%s have been rejected by rate limiting.", info.FullMethod)
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+</file>
+
+<file path="internal/app/grpc/app.go">
+package grpcApp
+
+import (
+	"context"
+	"crypto/subtle"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+
+	authgrpc "github.com/synnfluxx/TrustMeBroID/internal/grpc/auth"
+	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+)
+
+type App struct {
+	log          *slog.Logger
+	gRPCServer   *grpc.Server
+	port         int
+	ReaperCancel context.CancelFunc
+}
+
+func New(log *slog.Logger, authService authgrpc.Auth, port int, cancel context.CancelFunc, rps, burst int) *App {
+	gRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(RateLimiterInterceptor(rate.NewLimiter(rate.Limit(rps), burst)), LoggerInterceptor(log), AdminRequestsInterceptor()))
+
+	authgrpc.Register(gRPCServer, authService)
+	reflection.Register(gRPCServer)
+
+	return &App{
+		log:          log,
+		gRPCServer:   gRPCServer,
+		port:         port,
+		ReaperCancel: cancel,
+	}
+}
+
+func (a *App) MustRun() {
+	if err := a.Run(); err != nil {
+		panic(err)
+	}
+}
+
+func (a *App) Run() error {
+	const op = "grpcapp.Run"
+
+	log := a.log.With(slog.String("op", op), slog.Int("port", a.port))
+
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", a.port))
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("grpc server is running", slog.String("addr", l.Addr().String()))
+
+	if err := a.gRPCServer.Serve(l); err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	return nil
+}
+
+func (a *App) Stop() {
+	const op = "grpcapp.Stop"
+
+	a.log.With(slog.String("op", op)).Info("stopping gRPC server", slog.Int("port", a.port))
+
+	a.gRPCServer.GracefulStop()
+	a.ReaperCancel()
+}
+
+func validateToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(os.Getenv("ADMIN_TOKEN")), []byte(token)) == 1
+}
+
+</file>
+
+<file path="internal/app/app.go">
+package app
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	grpcApp "github.com/synnfluxx/TrustMeBroID/internal/app/grpc"
+	httpApp "github.com/synnfluxx/TrustMeBroID/internal/app/http"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage/postgres"
+	redisStorage "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
+)
+
+type App struct {
+	GRPCSrv *grpcApp.App
+	HTTPSrv *httpApp.App
+}
+
+func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration) *App {
+	storage, err := postgres.New(storagePath)
+	if err != nil {
+		panic(err)
+	}
+
+	redis, err := redisStorage.NewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(reaperDelay)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				log.Info("Trying to delete old RIP users")
+				deleted, err := storage.Reaper(context.Background())
+				if err != nil {
+					log.Warn("storage reaper error", sl.Err(err))
+				} else {
+					log.Info("storage reaper deleted successfully with users", slog.Attr{Key: "deleted users", Value: slog.AnyValue(deleted)})
+				}
+			}
+		}
+	}(ctx)
+
+	ph := encryptor.NewPasswordHasher()
+	authService := auth.New(log, storage, storage, storage, storage, redis, ph, accessTokenTTL, refreshTokenTTL)
+
+	return &App{
+		GRPCSrv: grpcApp.New(log, authService, grpcPort, cancel, grpcRPS, grpcBurst),
+		HTTPSrv: httpApp.NewHTTPApp(storage, log, redis, accessTokenTTL, refreshTokenTTL, visitorCleanerDelay, httpRPS, httpBurst),
+	}
+}
+
+</file>
+
+<file path="internal/app/http/app.go">
+package httpApp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+	"github.com/mo7zayed/reqip"
+	"github.com/synnfluxx/TrustMeBroID/internal/http/handlers"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/oauth"
+	"golang.org/x/time/rate"
+)
+
+type App struct {
+	router        *mux.Router
+	log           *slog.Logger
+	bindAddr      string
+	srv           *http.Server
+	oAuthServer   GitHubOAuthServer
+	visitors      map[string]*Visitor
+	mu            sync.RWMutex
+	rps           int
+	burst         int
+	cleanerCancel context.CancelFunc
+}
+
+type Visitor struct {
+	limiter  *rate.Limiter
+	lastSeen atomic.Int64
+}
+
+type ctxKey int8
+
+const (
+	ctxKeyUser ctxKey = iota
+	ctxKeyRequestID
+)
+
+type GitHubOAuthServer interface {
+	CallbackHandler() http.HandlerFunc
+	LoginHandler() http.HandlerFunc
+}
+
+func NewHTTPApp(storage oauth.Storage, log *slog.Logger, db oauth.TokenProvider, accessTTL, refreshTTL, cleanerDelay time.Duration, rps, burst int) *App {
+	bindAddr := os.Getenv("HTTP_BIND_ADDR")
+
+	GitHubOAuthService := oauth.New(oauth.NewGithubConfig(), storage, db, log)
+
+	app := &App{
+		router:      mux.NewRouter(),
+		log:         log,
+		bindAddr:    bindAddr,
+		oAuthServer: handlers.NewHTTPOAuthServer(GitHubOAuthService, log, accessTTL, refreshTTL),
+		visitors:    make(map[string]*Visitor),
+		rps:         rps,
+		burst:       burst,
+	}
+
+	app.configureRouter()
+	app.srv = &http.Server{Addr: bindAddr, Handler: app}
+	app.cleanerCancel = app.VisitorsCleaner(context.Background(), cleanerDelay)
+	return app
+}
+
+func (a *App) configureRouter() {
+	a.router.Use(a.setRequestID)
+	a.router.Use(a.logRequest)
+	a.router.Use(a.limit)
+	a.router.HandleFunc(fmt.Sprintf("/auth/%s/login", "github"), a.oAuthServer.LoginHandler())
+	a.router.HandleFunc(fmt.Sprintf("/auth/%s/callback", "github"), a.oAuthServer.CallbackHandler())
+}
+
+func (a *App) VisitorsCleaner(pctx context.Context, cleanerDelay time.Duration) context.CancelFunc {
+	ctx, cancel := context.WithCancel(pctx)
+
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(cleanerDelay)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.mu.Lock()
+				for k, v := range a.visitors {
+					if time.Since(time.Unix(v.lastSeen.Load(), 0)) >= 3*time.Hour {
+						delete(a.visitors, k)
+					}
+				}
+				a.mu.Unlock()
+			}
+		}
+	}(ctx)
+
+	return cancel
+}
+
+func (a *App) getVisitor(ip string) *Visitor {
+	a.mu.RLock()
+	visitor, ok := a.visitors[ip]
+	a.mu.RUnlock()
+
+	if ok {
+		return visitor
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if visitor, ok := a.visitors[ip]; !ok {
+		visitor = &Visitor{
+			limiter: rate.NewLimiter(rate.Limit(a.rps), a.burst),
+		}
+		visitor.lastSeen.Store(time.Now().Unix())
+		a.visitors[ip] = visitor
+		return visitor
+	} else {
+		return visitor
+	}
+}
+
+func (a *App) limit(next http.Handler) http.Handler {
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			ip := reqip.GetClientIP(r)
+
+			visitor := a.getVisitor(ip)
+			visitor.lastSeen.Store(time.Now().Unix())
+			if !visitor.limiter.Allow() {
+				http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+}
+
+func (a *App) setRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			id := uuid.New().String()
+			w.Header().Set("X-Request-ID", id)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKeyRequestID, id)))
+		})
+}
+
+func (a *App) logRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			log := a.log.With("http request", "remote_addr", r.RemoteAddr, "request_id", r.Context().Value(ctxKeyRequestID))
+			log.Info("started", "method", r.Method, "URI", r.RequestURI)
+			start := time.Now()
+			rw := &responseWriter{http.StatusOK, w}
+			next.ServeHTTP(rw, r)
+
+			switch {
+			case rw.code >= 500:
+				log.Error("request completed", "code", rw.code, "status", http.StatusText(rw.code), "duration", time.Since(start).Milliseconds())
+			case rw.code >= 400:
+				log.Warn("request completed", "code", rw.code, "status", http.StatusText(rw.code), "duration", time.Since(start).Milliseconds())
+			default:
+				log.Info("request completed", "code", rw.code, "status", http.StatusText(rw.code), "duration", time.Since(start).Milliseconds())
+			}
+
+		},
+	)
+}
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.router.ServeHTTP(w, r)
+}
+
+func (a *App) MustRun() {
+	if err := a.Run(); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			return
+		}
+		panic(err)
+	}
+}
+
+func (a *App) Run() error {
+	const op = "httpapp.Run"
+	log := a.log.With(slog.String("op", op), slog.String("port", a.bindAddr))
+	log.Info("Starting HTTP server", slog.String("port", a.bindAddr))
+	return a.srv.ListenAndServe()
+}
+
+func (a *App) Stop() error {
+	const op = "httpapp.Stop"
+	log := a.log.With(slog.String("op", op))
+	log.Info("Stopping HTTP server", slog.String("port", a.bindAddr))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a.cleanerCancel()
+	err := a.srv.Shutdown(ctx)
+	if err != nil {
+		return err
+	}
+
+	log.Info("HTTP server succesfully stopped!")
+	return nil
+}
+
+</file>
+
+<file path="internal/app/http/responsewriter.go">
+package httpApp
+
+import "net/http"
+
+type responseWriter struct {
+	code int
+	http.ResponseWriter
+}
+
+func (w *responseWriter) WriteHeader(statusCode int) {
+	w.code = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+</file>
+
+<file path="internal/grpc/auth/server.go">
+package authgrpc
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"os"
+	"regexp"
+
+	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+const (
+	emptyValue  = 0
+	emptyString = ""
+)
+
+var PassErr = errors.New("password must be at least 8 characters long and include at least one uppercase letter and one number")
+
+type Auth interface {
+	Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (accessToken, refreshToken string, err error)
+	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, err error)
+	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
+	RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error)
+	DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error
+	DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error
+	DeleteApp(ctx context.Context, appID int64) error
+	RefreshToken(ctx context.Context, refreshToken string) (string, error)
+	UpdateRefreshToken(ctx context.Context, token string) (string, error)
+	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
+	Logout(ctx context.Context, token string) error
+}
+
+type serverAPI struct {
+	ssov1.UnimplementedAuthServer
+	auth Auth
+}
+
+func Register(gRPC *grpc.Server, auth Auth) {
+	ssov1.RegisterAuthServer(gRPC, &serverAPI{auth: auth})
+}
+
+func (s *serverAPI) MakeAdmin(ctx context.Context, req *ssov1.MakeAdminRequest) (*ssov1.MakeAdminResponse, error) {
+	uid, err := s.auth.MakeAdmin(ctx, req.GetUserId(), req.GetAppId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return &ssov1.MakeAdminResponse{
+		UserId: uid,
+	}, nil
+}
+
+func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.LoginResponse, error) {
+	if req.GetAppId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	switch req.Identifier.(type) {
+	case *ssov1.LoginRequest_Email:
+		email := req.GetEmail()
+		if err := validate(email, req.GetPassword()); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+
+		accessToken, refreshToken, err := s.auth.Login(ctx, models.UserIdentifier{Email: &email}, req.GetPassword(), req.GetAppId())
+		if err != nil {
+			if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInvalidIdentifier) {
+				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
+			}
+			if errors.Is(err, storage.ErrAppNotFound) {
+				return nil, status.Error(codes.NotFound, "app not found")
+			}
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.NotFound, "user not found")
+			}
+
+			return nil, status.Error(codes.Internal, "internal error")
+		}
+
+		return &ssov1.LoginResponse{
+			RefreshToken: refreshToken,
+			AccessToken:  accessToken,
+		}, nil
+	case *ssov1.LoginRequest_Username:
+		username := req.GetUsername()
+		if err := validate("", req.GetPassword()); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+
+		accessToken, refreshToken, err := s.auth.Login(ctx, models.UserIdentifier{Username: &username}, req.GetPassword(), req.GetAppId())
+		if err != nil {
+			if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInvalidIdentifier) {
+				return nil, status.Error(codes.NotFound, auth.ErrInvalidCredentials.Error())
+			}
+			if errors.Is(err, storage.ErrAppNotFound) {
+				return nil, status.Error(codes.NotFound, "app not found")
+			}
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.NotFound, "user not found")
+			}
+
+			return nil, status.Error(codes.Internal, "internal error")
+		}
+
+		return &ssov1.LoginResponse{
+			RefreshToken: refreshToken,
+			AccessToken:  accessToken,
+		}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "invalid identifier")
+	}
+}
+
+func (s *serverAPI) RefreshToken(ctx context.Context, req *ssov1.RefreshTokenRequest) (*ssov1.RefreshTokenResponse, error) {
+	token, err := s.auth.RefreshToken(ctx, req.GetRefreshToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return &ssov1.RefreshTokenResponse{
+		NewToken: token,
+	}, nil
+}
+
+func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*ssov1.RegisterResponse, error) {
+	if err := validate(req.GetEmail(), req.GetPassword()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	if req.GetUsername() == emptyString {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+
+	userID, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetUsername(), req.GetPassword(), req.GetAppId())
+	if err != nil {
+		if errors.Is(err, auth.ErrUserExists) {
+			return nil, status.Error(codes.AlreadyExists, "user already exists")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.RegisterResponse{
+		UserId: userID,
+	}, nil
+}
+
+func (s *serverAPI) IsAdmin(ctx context.Context, req *ssov1.IsAdminRequest) (*ssov1.IsAdminResponse, error) {
+	if req.GetUserId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	isAdmin, err := s.auth.IsAdmin(ctx, req.GetUserId(), req.GetAppId())
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+		}
+
+		if errors.Is(err, storage.ErrAppNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.IsAdminResponse{
+		IsAdmin: isAdmin,
+	}, nil
+}
+
+func (s *serverAPI) RegisterApp(ctx context.Context, req *ssov1.RegisterAppRequest) (*ssov1.RegisterAppResponse, error) {
+	if !validateRedirectURI(req.GetRedirectUri(), os.Getenv("ENV")) {
+		return nil, status.Error(codes.InvalidArgument, "invalid redirect_uri")
+	}
+
+	appID, secret, err := s.auth.RegisterApp(ctx, req.GetAppName(), req.GetRedirectUri())
+	if err != nil {
+		if errors.Is(err, auth.ErrAppExists) {
+			return nil, status.Error(codes.AlreadyExists, "app already exists")
+		}
+
+		return nil, status.Error(codes.Internal, "internal server error")
+	}
+
+	return &ssov1.RegisterAppResponse{
+		AppId:  appID,
+		Secret: secret,
+	}, nil
+}
+
+func (s *serverAPI) DeleteUser(ctx context.Context, req *ssov1.DeleteUserRequest) (*ssov1.Empty, error) {
+	if req.GetAppId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+
+	switch req.Identifier.(type) {
+	case *ssov1.DeleteUserRequest_Email:
+		email := req.GetEmail()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{Email: &email}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal error")
+		}
+
+		return &ssov1.Empty{}, nil
+	case *ssov1.DeleteUserRequest_Username:
+		username := req.GetUsername()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{Username: &username}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal error")
+		}
+
+		return &ssov1.Empty{}, nil
+	case *ssov1.DeleteUserRequest_UserId:
+		userID := req.GetUserId()
+		err := s.auth.DeleteUser(ctx, models.UserIdentifier{ID: &userID}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal error")
+		}
+
+		return &ssov1.Empty{}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "invalid identifier")
+	}
+}
+
+func (s *serverAPI) Logout(ctx context.Context, req *ssov1.LogoutRequest) (*ssov1.Empty, error) { //TODO: DONT tested
+	if req.GetRefreshToken() == "" {
+		return nil, status.Error(codes.InvalidArgument, "refresh_token is required")
+	}
+
+	if err := s.auth.Logout(ctx, req.GetRefreshToken()); err != nil {
+		return nil, status.Error(codes.Internal, "internal server error")
+	}
+
+	return &ssov1.Empty{}, nil
+}
+
+func (s *serverAPI) DeleteAdmin(ctx context.Context, req *ssov1.DeleteAdminRequest) (*ssov1.Empty, error) {
+	if req.GetAppId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+
+	switch req.Identifier.(type) {
+	case *ssov1.DeleteAdminRequest_Email:
+		email := req.GetEmail()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{Email: &email}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
+		}
+
+		return &ssov1.Empty{}, nil
+	case *ssov1.DeleteAdminRequest_Username:
+		username := req.GetUsername()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{Username: &username}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
+		}
+
+		return &ssov1.Empty{}, nil
+	case *ssov1.DeleteAdminRequest_UserId:
+		userID := req.GetUserId()
+		err := s.auth.DeleteAdmin(ctx, models.UserIdentifier{ID: &userID}, req.GetAppId())
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+			}
+
+			return nil, status.Error(codes.Internal, "internal server error")
+		}
+
+		return &ssov1.Empty{}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "invalid identifier")
+	}
+}
+
+func (s *serverAPI) DeleteApp(ctx context.Context, req *ssov1.DeleteAppRequest) (*ssov1.Empty, error) {
+	err := s.auth.DeleteApp(ctx, req.GetAppId())
+	if err != nil {
+		if errors.Is(err, storage.ErrAppNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "invalid app_id")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.Empty{}, nil
+}
+
+func (s *serverAPI) UpdateRefreshToken(ctx context.Context, req *ssov1.UpdateRefreshTokenRequst) (*ssov1.UpdateRefreshTokenResponse, error) {
+	token, err := s.auth.UpdateRefreshToken(ctx, req.GetRefreshToken())
+	if err != nil {
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "refresh token not found")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.UpdateRefreshTokenResponse{
+		RefreshToken: token,
+	}, nil
+}
+
+func validate(email, password string) error {
+	if email != "" {
+		if err := validation.Validate(email, validation.Required, is.Email); err != nil {
+			return err
+		}
+	}
+	if err := validation.Validate(password, validation.Required, validation.Length(8, 32), validation.Match(regexp.MustCompile(`[0-9]`)), validation.Match(regexp.MustCompile(`[A-Z]`))); err != nil {
+		return PassErr
+	}
+
+	return nil
+}
+
+func validateRedirectURI(uri string, env string) bool {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+
+	if env == "prod" {
+		if u.Scheme != "https" {
+			return false
+		}
+	} else {
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return false
+		}
+	}
+
+	if u.Host == "" {
+		return false
+	}
+
+	if u.User != nil {
+		return false
+	}
+
+	if u.Fragment != "" {
+		return false
+	}
+
+	return true
+}
+
+</file>
+
+<file path="internal/grpc/auth/server_test.go">
+package authgrpc
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+type MockAuth struct {
+	mock.Mock
+}
+
+func (m *MockAuth) Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (string, string, error) {
+	args := m.Called(ctx, identifier, password, appID)
+	return args.String(0), args.String(1), args.Error(2)
+}
+
+func (m *MockAuth) RegisterNewUser(ctx context.Context, email, username, password string, appID int64) (int64, error) {
+	args := m.Called(ctx, email, username, password, appID)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *MockAuth) RefreshToken(ctx context.Context, token string) (string, error) {
+	args := m.Called(ctx, token)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockAuth) UpdateRefreshToken(ctx context.Context, token string) (string, error) {
+	args := m.Called(ctx, token)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockAuth) DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
+	args := m.Called(ctx, identifier, appID)
+	return args.Error(0)
+}
+
+func (m *MockAuth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
+	args := m.Called(ctx, identifier, appID)
+	return args.Error(0)
+} // DON'T TESTED
+
+func (m *MockAuth) DeleteApp(ctx context.Context, appID int64) error {
+	args := m.Called(ctx, appID)
+	return args.Error(0)
+} // DON'T TESTED
+
+func (m *MockAuth) IsAdmin(ctx context.Context, userID, appID int64) (bool, error) {
+	args := m.Called(ctx, userID, appID)
+	return args.Bool(0), args.Error(1)
+} // DON'T TESTED
+
+func (m *MockAuth) MakeAdmin(ctx context.Context, userID, appID int64) (int64, error) {
+	args := m.Called(ctx, userID, appID)
+	return int64(args.Int(0)), args.Error(1)
+} // DON'T TESTED
+
+func (m *MockAuth) RegisterApp(ctx context.Context, name, redirectURI string) (int64, string, error) {
+	panic("implement me!")
+} // DON'T TESTED
+
+func (m *MockAuth) Logout(ctx context.Context, token string) error {
+	panic("implement me")
+} // DON'T TESTED
+
+func TestLogin(t *testing.T) {
+	tests := []struct {
+		name      string
+		req       *ssov1.LoginRequest
+		mockSetup func(m *MockAuth)
+		wantCode  codes.Code
+		wantErr   bool
+	}{
+		{
+			name: "success email exact identifier",
+			req: &ssov1.LoginRequest{
+				AppId: 1,
+				Identifier: &ssov1.LoginRequest_Email{
+					Email: "test@mail.com",
+				},
+				Password: "Password1",
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("Login",
+					mock.Anything,
+					mock.MatchedBy(func(id models.UserIdentifier) bool {
+						return id.Email != nil && *id.Email == "test@mail.com"
+					}),
+					"Password1",
+					int64(1),
+				).Return("access", "refresh", nil)
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name: "success username",
+			req: &ssov1.LoginRequest{
+				AppId: 1,
+				Identifier: &ssov1.LoginRequest_Username{
+					Username: "user123",
+				},
+				Password: "Password1",
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("Login",
+					mock.Anything,
+					mock.MatchedBy(func(id models.UserIdentifier) bool {
+						return id.Username != nil && *id.Username == "user123"
+					}),
+					"Password1",
+					int64(1),
+				).Return("access", "refresh", nil)
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name: "invalid credentials",
+			req: &ssov1.LoginRequest{
+				AppId: 1,
+				Identifier: &ssov1.LoginRequest_Email{
+					Email: "bad@mail.com",
+				},
+				Password: "Password1",
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("Login", mock.Anything, mock.Anything, "Password1", int64(1)).
+					Return("", "", auth.ErrInvalidCredentials)
+			},
+			wantCode: codes.NotFound,
+			wantErr:  true,
+		},
+		{
+			name: "invalid password format",
+			req: &ssov1.LoginRequest{
+				AppId: 1,
+				Identifier: &ssov1.LoginRequest_Email{
+					Email: "test@mail.com",
+				},
+				Password: "123",
+			},
+			mockSetup: func(m *MockAuth) {},
+			wantCode:  codes.InvalidArgument,
+			wantErr:   true,
+		},
+		{
+			name: "missing app_id",
+			req: &ssov1.LoginRequest{
+				AppId: 0,
+			},
+			mockSetup: func(m *MockAuth) {},
+			wantCode:  codes.InvalidArgument,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := new(MockAuth)
+			tt.mockSetup(m)
+
+			s := &serverAPI{auth: m}
+
+			resp, err := s.Login(context.Background(), tt.req)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				st, _ := status.FromError(err)
+				require.Equal(t, tt.wantCode, st.Code())
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			m.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDeleteUser(t *testing.T) {
+	tests := []struct {
+		name      string
+		req       *ssov1.DeleteUserRequest
+		mockSetup func(m *MockAuth)
+		wantCode  codes.Code
+		wantErr   bool
+	}{
+		{
+			name: "delete by email",
+			req: &ssov1.DeleteUserRequest{
+				AppId: 1,
+				Identifier: &ssov1.DeleteUserRequest_Email{
+					Email: "test@mail.com",
+				},
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("DeleteUser",
+					mock.Anything,
+					mock.MatchedBy(func(id models.UserIdentifier) bool {
+						return id.Email != nil && *id.Email == "test@mail.com"
+					}),
+					int64(1),
+				).Return(nil)
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name: "delete by username",
+			req: &ssov1.DeleteUserRequest{
+				AppId: 1,
+				Identifier: &ssov1.DeleteUserRequest_Username{
+					Username: "user123",
+				},
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("DeleteUser",
+					mock.Anything,
+					mock.MatchedBy(func(id models.UserIdentifier) bool {
+						return id.Username != nil && *id.Username == "user123"
+					}),
+					int64(1),
+				).Return(nil)
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name: "delete by userID",
+			req: &ssov1.DeleteUserRequest{
+				AppId: 1,
+				Identifier: &ssov1.DeleteUserRequest_UserId{
+					UserId: 42,
+				},
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("DeleteUser",
+					mock.Anything,
+					mock.MatchedBy(func(id models.UserIdentifier) bool {
+						return id.ID != nil && *id.ID == int64(42)
+					}),
+					int64(1),
+				).Return(nil)
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name: "user not found",
+			req: &ssov1.DeleteUserRequest{
+				AppId: 1,
+				Identifier: &ssov1.DeleteUserRequest_Email{
+					Email: "ghost@mail.com",
+				},
+			},
+			mockSetup: func(m *MockAuth) {
+				m.On("DeleteUser", mock.Anything, mock.Anything, int64(1)).
+					Return(storage.ErrUserNotFound)
+			},
+			wantCode: codes.InvalidArgument,
+			wantErr:  true,
+		},
+		{
+			name: "missing app_id",
+			req: &ssov1.DeleteUserRequest{
+				AppId: 0,
+			},
+			mockSetup: func(m *MockAuth) {},
+			wantCode:  codes.InvalidArgument,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := new(MockAuth)
+			tt.mockSetup(m)
+
+			s := &serverAPI{auth: m}
+
+			_, err := s.DeleteUser(context.Background(), tt.req)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				st, _ := status.FromError(err)
+				require.Equal(t, tt.wantCode, st.Code())
+				return
+			}
+
+			require.NoError(t, err)
+
+			m.AssertExpectations(t)
+		})
+	}
+}
+
+</file>
+
+<file path="internal/config/config.go">
+package config
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/ilyakaznacheev/cleanenv"
+)
+
+type Config struct {
+	Env             string         `yaml:"env" env-required:"true"`
+	AccessTokenTTL  time.Duration  `yaml:"access_token_ttl" env-required:"true"`
+	RefreshTokenTTL time.Duration  `yaml:"refresh_token_ttl" env-required:"true"`
+	GRPC            GRPCConfig     `yaml:"grpc"`
+	DB              PostgresConfig `yaml:"postgres" env-required:"true"`
+	Redis           RedisConfig    `yaml:"redis" env-required:"true"`
+	HTTP            HTTPConfig     `yaml:"http" env-required:"true"`
+}
+
+type GRPCConfig struct {
+	Port    int           `yaml:"port"`
+	Timeout time.Duration `yaml:"timeout"`
+	Rps     int           `yaml:"rps"` // Requests Per Second
+	Burst   int           `yaml:"burst"`
+}
+
+type HTTPConfig struct {
+	Rps          int           `yaml:"rps"`
+	Burst        int           `yaml:"burst"`
+	CleanerDelay time.Duration `yaml:"visitor_cleaner_delay"`
+}
+
+type PostgresConfig struct {
+	Port             int           `yaml:"port"`
+	Host             string        `yaml:"host"`
+	ConnectionString string        `yaml:"-"`
+	ReaperDelay      time.Duration `yaml:"reaper_delay"`
+}
+
+type RedisConfig struct {
+	Port    int           `yaml:"port"`
+	Host    string        `yaml:"host"`
+	Timeout time.Duration `yaml:"timeout"`
+	Retries int           `yaml:"retires"`
+}
+
+func (c *PostgresConfig) mustSetConnectionString() {
+	user, pw, name := os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME")
+
+	if user == "" || pw == "" || name == "" {
+		panic("postgres field must be filled")
+	}
+
+	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s", user, pw, c.Host, c.Port, name)
+}
+
+func MustLoad() *Config {
+	path := fetchConfigPath()
+	if path == "" {
+		panic("config path is empty")
+	}
+
+	return MustLoadByPath(path)
+}
+
+func MustLoadByPath(path string) *Config {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		panic("config file does not exists: " + path)
+	}
+
+	var cfg Config
+
+	if err := cleanenv.ReadConfig(path, &cfg); err != nil {
+		panic("failed to read config: " + err.Error())
+	}
+
+	cfg.DB.mustSetConnectionString()
+
+	os.Setenv("ENV", cfg.Env)
+
+	return &cfg
+}
+
+// flag > env > default
+func fetchConfigPath() string {
+	var res string
+	flag.StringVar(&res, "c", "", "path to config file")
+	flag.Parse()
+
+	if res == "" {
+		res = os.Getenv("CONFIG_PATH")
+	}
+
+	return res
+}
+
+</file>
+
+<file path="internal/storage/redis/redis.go">
+package redisStorage
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+)
+
+type Storage struct {
+	rdb *redis.Client
+}
+
+func NewRedis(host string, timeout time.Duration, retries int) (*Storage, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:        host,
+		Password:    os.Getenv("REDIS_PW"),
+		DB:          0,
+		DialTimeout: timeout,
+		MaxRetries:  retries,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		return nil, err
+	}
+
+	return &Storage{
+		rdb: client,
+	}, nil
+}
+
+func (s *Storage) GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error) {
+	const op = "storage.Redis.RefreshToken"
+
+	refreshTokenFields := &models.RefreshTokenFields{}
+	fields := s.rdb.HGetAll(ctx, token)
+	if err := fields.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	if len(fields.Val()) == 0 {
+		return nil, fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
+	}
+
+	err := fields.Scan(refreshTokenFields)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return refreshTokenFields, nil
+}
+
+func (s *Storage) SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error {
+	const op = "storage.Redis.SaveRefreshToken"
+
+	_, err := saveRefreshTokenScript.Run(ctx, s.rdb, []string{token}, userID, appID, ttl.Seconds()).Result()
+
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	return nil
+}
+
+func (s *Storage) SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error {
+	const op = "storage.Redis.SetNewRefreshtoken"
+
+	res, err := setNewTokenScript.Run(ctx, s.rdb, []string{oldToken, newToken}, int(ttl.Seconds())).Result()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if res.(int64) == 0 {
+		return fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
+	}
+
+	return nil
+}
+
+func (s *Storage) Logout(ctx context.Context, token string) error {
+	const op = "storage.Redis.Logout"
+
+	cmdErr := s.rdb.Del(ctx, token)
+	if cmdErr.Err() != nil {
+		return fmt.Errorf("%s: %w", op, cmdErr.Err())
+	}
+
+	return nil
+}
+
+func (s *Storage) Close() error {
+	return s.rdb.Close()
+}
+
+</file>
+
+<file path="internal/storage/redis/scripts.go">
+package redisStorage
+
+import "github.com/redis/go-redis/v9"
+
+var setNewTokenScript = redis.NewScript(`
+	if redis.call("EXISTS", KEYS[1]) == 1 then
+		redis.call("RENAME", KEYS[1], KEYS[2])
+		redis.call("EXPIRE", KEYS[2], ARGV[1])
+		return 1
+	end
+	return 0
+`)
+
+var saveRefreshTokenScript = redis.NewScript(`
+	redis.call("HSET", KEYS[1], "uid", ARGV[1], "aid", ARGV[2])
+	redis.call("EXPIRE", KEYS[1], ARGV[3])
+	return 1
+`)
+</file>
+
+<file path="internal/storage/postgres/postgres.go">
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/lib/pq"
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+)
+
+type Storage struct {
+	db         *sql.DB
+	masterKey  []byte
+	reaperStmt *sql.Stmt
+}
+
+func New(url string) (*Storage, error) {
+	const op = "postgres.New"
+
+	db, err := sql.Open("postgres", url)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	strg := &Storage{
+		db: db,
+	}
+
+	strg.masterKey = []byte(os.Getenv("MASTER_KEY"))
+
+	stmt, err := db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id")
+	if err != nil {
+		return nil, err
+	}
+
+	strg.reaperStmt = stmt
+
+	return strg, nil
+}
+
+func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
+	const op = "storage.postgres.reaper"
+
+	deletedUsers := make([]int64, 0)
+
+	rows, err := s.reaperStmt.QueryContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			continue
+		}
+		deletedUsers = append(deletedUsers, uid)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return deletedUsers, nil
+}
+
+func (s *Storage) SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (int64, error) {
+	const op = "storage.postgres.SaveUser"
+
+	var id int64
+	err := s.db.QueryRowContext(ctx, "INSERT INTO users(email, username, pass_hash, app_id) VALUES($1, $2, $3, $4) RETURNING id", email, username, passHash, appID).Scan(&id)
+	if err != nil {
+		var pqErr *pq.Error
+
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return 0, fmt.Errorf("%s: %w", op, storage.ErrUserExists)
+		}
+
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return 0, fmt.Errorf("%s: %w", op, storage.ErrAppNotFound)
+		}
+
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return id, nil
+}
+
+func (s *Storage) getUser(ctx context.Context, query string, args ...any) (models.User, error) {
+	const op = "storage.postgres.getUser"
+
+	row := s.db.QueryRowContext(ctx, query, args...)
+
+	var user models.User
+	err := row.Scan(&user.ID, &user.Email, &user.Username, &user.PassHash, &user.DeletedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
+		}
+
+		return models.User{}, fmt.Errorf("%s: %w", op, err)
+	}
+
+	if user.DeletedAt.Valid {
+		return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserDeleted)
+	}
+
+	return user, nil
+}
+
+func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
+	return s.getUser(ctx,
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2",
+		userID,
+		appID,
+	)
+}
+
+func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
+	return s.getUser(ctx,
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2",
+		email,
+		appID,
+	)
+}
+
+func (s *Storage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
+	return s.getUser(ctx,
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2",
+		appID,
+		username,
+	)
+}
+
+func (s *Storage) deleteUser(ctx context.Context, query string, args ...any) error {
+	const op = "storage.postgres.deleteUser"
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if affected == 0 {
+		return storage.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (s *Storage) DeleteUserByEmail(ctx context.Context, email string, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND email = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		email,
+	)
+}
+
+func (s *Storage) DeleteUserByUsername(ctx context.Context, username string, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND username = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		username,
+	)
+}
+
+func (s *Storage) DeleteUserByUserID(ctx context.Context, userID, appID int64) error {
+	return s.deleteUser(ctx,
+		"UPDATE users SET deleted_at = $1 WHERE app_id = $2 AND id = $3 AND deleted_at IS NULL",
+		time.Now().UTC(),
+		appID,
+		userID,
+	)
+}
+
+func (s *Storage) MakeAdmin(ctx context.Context, userID, appID int64) (int64, error) {
+	const op = "storage.postgres.MakeAdmin"
+
+	var aid int64
+	err := s.db.QueryRowContext(ctx, "INSERT INTO admins (id, email, username, app_id) SELECT id, email, username, app_id FROM users WHERE id = $1 AND app_id = $2 RETURNING id", userID, appID).Scan(&aid)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return aid, nil
+}
+
+func (s *Storage) IsAdmin(ctx context.Context, id int64, appID int64) (bool, error) {
+	const op = "storage.postgres.IsAdmin"
+
+	var isAdmin bool
+	row := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM admins WHERE id = $1 AND app_id = $2)", id, appID)
+
+	err := row.Scan(&isAdmin)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
+		}
+
+		return false, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return isAdmin, nil
+}
+
+func (s *Storage) deleteAdmin(ctx context.Context, query string, args ...any) error {
+	const op = "storage.postgres.deleteAdmin"
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if affected == 0 {
+		return storage.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND email = $2", appID, email)
+}
+
+func (s *Storage) DeleteAdminByUsername(ctx context.Context, username string, appID int64) error {
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND username = $2", appID, username)
+}
+func (s *Storage) DeleteAdminByUserID(ctx context.Context, userID, appID int64) error {
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND id = $2", appID, userID)
+}
+
+func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
+	const op = "storage.postgres.App"
+
+	row := s.db.QueryRowContext(ctx, "SELECT id, name, secret, redirect_uri FROM apps WHERE id = $1", appID)
+	var app models.App
+	err := row.Scan(&app.ID, &app.Name, &app.Secret, &app.RedirectURI)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.App{}, storage.ErrAppNotFound
+		}
+
+		return models.App{}, fmt.Errorf("%s: %w", op, err)
+	}
+
+	decrypted, err := encryptor.DecryptString(s.masterKey, app.Secret)
+	if err != nil {
+		return models.App{}, err
+	}
+	app.Secret = decrypted
+
+	return app, nil
+}
+
+func (s *Storage) RegisterApp(ctx context.Context, appName, appSecret, redirectURI string) (appID int64, err error) {
+	const op = "storage.postgres.RegisterApp"
+
+	var id int64
+	err = s.db.QueryRowContext(ctx, "INSERT INTO apps(name, secret, redirect_uri) VALUES($1, $2, $3) RETURNING id", appName, appSecret, redirectURI).Scan(&id)
+	if err != nil {
+		var pqErr *pq.Error
+
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return 0, fmt.Errorf("%s: %w", op, storage.ErrAppExists)
+		}
+
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return id, nil
+}
+
+func (s *Storage) DeleteApp(ctx context.Context, appID int64) error {
+	const op = "storage.postgres.DeleteApp"
+
+	res, err := s.db.ExecContext(ctx, "DELETE FROM apps WHERE id = $1", appID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if affected == 0 {
+		return storage.ErrAppNotFound
+	}
+
+	return nil
+}
+
+func (s *Storage) FindOrCreateOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error) {
+	const op = "storage.postgres.SaveOAuthUser"
+
+	var uid int64
+	err = s.db.QueryRowContext(ctx, "INSERT INTO users(email, username, app_id) VALUES($1, $2, $3) RETURNING id", email, username, appID).Scan(&uid)
+	if err != nil {
+		var pqErr *pq.Error
+
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			usr, err := s.UserByEmail(ctx, email, appID)
+			if err != nil {
+				return models.User{}, fmt.Errorf("%s: %w", op, err)
+			}
+
+			return usr, nil
+		}
+
+		return models.User{}, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return models.User{
+		ID:       uid,
+		Email:    email,
+		Username: username,
+	}, nil
+}
+
+func (s *Storage) Emails(ctx context.Context) ([]string, error) {
+	emails := make([]string, 0)
+	rows, err := s.db.QueryContext(ctx, "SELECT email FROM users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			continue
+		}
+		emails = append(emails, email)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return emails, nil
+}
+
+func (s *Storage) Usernames(ctx context.Context) ([]string, error) {
+	usernames := make([]string, 0)
+	rows, err := s.db.QueryContext(ctx, "SELECT username FROM users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var username string
+		if err := rows.Scan(&username); err != nil {
+			continue
+		}
+		usernames = append(usernames, username)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return usernames, nil
+}
+
+</file>
+
+<file path="internal/storage/postgres/postgres_test.go">
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	_ "github.com/lib/pq"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	strg "github.com/synnfluxx/TrustMeBroID/internal/storage"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
+)
+
+const (
+	appName     = "test-app"
+	appSecret   = "very-security-secret"
+	redirectURI = "https://example.com/callback"
+	email       = "email@example.com"
+	username    = "testuser"
+	passHash    = "very-security-password"
+)
+
+func createPostgresDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	ctx := context.Background()
+	migrationsPath := "file://" + migrationsDir(t)
+
+	pgContainer, err := postgres.Run(ctx,
+		"postgres:alpine",
+		postgres.WithDatabase("testdb"),
+		postgres.WithUsername("user"),
+		postgres.WithPassword("pass"),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		if err := pgContainer.Terminate(ctx); err != nil {
+			t.Logf("failed to terminate container: %v", err)
+		}
+	})
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	runMigrations(t, connStr, migrationsPath)
+
+	db, err := sql.Open("postgres", connStr)
+	require.NoError(t, err)
+
+	require.NoError(t, db.Ping())
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	return db
+}
+
+func migrationsDir(t *testing.T) string {
+	t.Helper()
+
+	_, filename, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+
+	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations"))
+}
+
+func runMigrations(t *testing.T, connectionString, migrationsPath string) {
+	t.Helper()
+
+	m, err := migrate.New(migrationsPath, connectionString)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		sourceErr, dbErr := m.Close()
+		require.NoError(t, sourceErr)
+		require.NoError(t, dbErr)
+	})
+
+	require.NoError(t, m.Up())
+}
+
+func newTestStorage(t *testing.T) (*Storage, context.Context) {
+	t.Helper()
+
+	return &Storage{db: createPostgresDB(t)}, context.Background()
+}
+
+func createTestApp(t *testing.T, storage *Storage, ctx context.Context) int64 {
+	t.Helper()
+
+	appID, err := storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+	require.NoError(t, err)
+
+	return appID
+}
+
+func createTestUser(t *testing.T, storage *Storage, ctx context.Context, appID int64) int64 {
+	t.Helper()
+
+	userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+	require.NoError(t, err)
+
+	return userID
+}
+
+func TestStorage_RegisterApp(t *testing.T) {
+	storage, ctx := newTestStorage(t)
+
+	t.Run("success", func(t *testing.T) {
+		appID, err := storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		require.NoError(t, err)
+		assert.NotZero(t, appID)
+	})
+
+	t.Run("duplicate", func(t *testing.T) {
+		_, err := storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		require.NoError(t, err)
+
+		_, err = storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrAppExists)
+	})
+}
+
+func TestStorage_SaveUser(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+
+		userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		require.NoError(t, err)
+		assert.NotZero(t, userID)
+	})
+
+	t.Run("duplicate", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		require.NoError(t, err)
+
+		_, err = storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserExists)
+	})
+
+	t.Run("non-existing app", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrAppNotFound)
+	})
+}
+
+func TestStorage_UserLookup(t *testing.T) {
+	storage, ctx := newTestStorage(t)
+	appID := createTestApp(t, storage, ctx)
+	userID := createTestUser(t, storage, ctx, appID)
+
+	t.Run("find by id", func(t *testing.T) {
+		user, err := storage.User(ctx, userID, appID)
+		require.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, email, user.Email)
+		assert.Equal(t, username, user.Username)
+	})
+
+	t.Run("find by username", func(t *testing.T) {
+		user, err := storage.UserByUsername(ctx, username, appID)
+		require.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, email, user.Email)
+	})
+
+	t.Run("find by email", func(t *testing.T) {
+		user, err := storage.UserByEmail(ctx, email, appID)
+		require.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, username, user.Username)
+	})
+
+	t.Run("user not found", func(t *testing.T) {
+		_, err := storage.UserByEmail(ctx, "missing@example.com", appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserNotFound)
+	})
+}
+
+func TestStorage_DeleteUser(t *testing.T) {
+	t.Run("delete by email", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+		createTestUser(t, storage, ctx, appID)
+
+		err := storage.DeleteUserByEmail(ctx, email, appID)
+		require.NoError(t, err)
+
+		_, err = storage.UserByEmail(ctx, email, appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserDeleted)
+	})
+
+	t.Run("delete by username", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+		createTestUser(t, storage, ctx, appID)
+
+		err := storage.DeleteUserByUsername(ctx, username, appID)
+		require.NoError(t, err)
+
+		_, err = storage.UserByUsername(ctx, username, appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserDeleted)
+	})
+
+	t.Run("delete by user id", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+		userID := createTestUser(t, storage, ctx, appID)
+
+		err := storage.DeleteUserByUserID(ctx, userID, appID)
+		require.NoError(t, err)
+
+		_, err = storage.User(ctx, userID, appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserDeleted)
+	})
+
+	t.Run("delete missing user", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+
+		err := storage.DeleteUserByEmail(ctx, "missing@example.com", appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrUserNotFound)
+	})
+}
+
+func TestStorage_DeleteApp(t *testing.T) {
+	storage, ctx := newTestStorage(t)
+
+	t.Run("success", func(t *testing.T) {
+		appID := createTestApp(t, storage, ctx)
+
+		err := storage.DeleteApp(ctx, appID)
+		require.NoError(t, err)
+
+		_, err = storage.App(ctx, appID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrAppNotFound)
+	})
+
+	t.Run("missing app", func(t *testing.T) {
+		err := storage.DeleteApp(ctx, 1337)
+		require.Error(t, err)
+		require.ErrorIs(t, err, strg.ErrAppNotFound)
+	})
+}
+
+func TestStorage_FindOrCreateOAuthUser(t *testing.T) {
+	t.Run("creates new user", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+
+		user, err := storage.FindOrCreateOAuthUser(ctx, email, username, appID)
+		require.NoError(t, err)
+		assert.NotZero(t, user.ID)
+		assert.Equal(t, email, user.Email)
+		assert.Equal(t, username, user.Username)
+	})
+
+	t.Run("returns existing user", func(t *testing.T) {
+		storage, ctx := newTestStorage(t)
+		appID := createTestApp(t, storage, ctx)
+		userID := createTestUser(t, storage, ctx, appID)
+
+		user, err := storage.FindOrCreateOAuthUser(ctx, email, username, appID)
+		require.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, email, user.Email)
+	})
+}
+
+func TestStorage_SaveAndFind(t *testing.T) {
+	storage, ctx := newTestStorage(t)
+
+	t.Run("save user in non-existing app", func(t *testing.T) {
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, strg.ErrAppNotFound))
+	})
+
+	appID := createTestApp(t, storage, ctx)
+
+	t.Run("duplicate app registration", func(t *testing.T) {
+		_, err := storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, strg.ErrAppExists))
+	})
+
+	userID := createTestUser(t, storage, ctx, appID)
+
+	t.Run("duplicate save user", func(t *testing.T) {
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, strg.ErrUserExists))
+	})
+
+	t.Run("find user by username", func(t *testing.T) {
+		user, err := storage.UserByUsername(ctx, username, appID)
+		assert.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, email, user.Email)
+	})
+
+	t.Run("find user by email", func(t *testing.T) {
+		user, err := storage.UserByEmail(ctx, email, appID)
+		assert.NoError(t, err)
+		assert.Equal(t, userID, user.ID)
+		assert.Equal(t, username, user.Username)
+	})
+}
+
+</file>
+
+<file path="internal/storage/storage.go">
+package storage
+
+import "errors"
+
+var (
+	ErrUserExists   = errors.New("user already exists")
+	ErrUserNotFound = errors.New("user not found")
+	ErrAppNotFound  = errors.New("app not found")
+	ErrAppExists    = errors.New("app already exists")
+	//ErrEmptyDB       = errors.New("database is empty")
+	ErrUserDeleted   = errors.New("user deleted")
+	ErrTokenNotFound = errors.New("token not found")
+)
+
+</file>
+
+<file path="internal/http/handlers/server.go">
+package handlers
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+type Server struct {
+	log             *slog.Logger
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
+	OAuth           OAuthService
+}
+
+func NewHTTPOAuthServer(oauthService OAuthService, log *slog.Logger, accessTokenTTL, refreshTokenTTL time.Duration) *Server {
+	return &Server{
+		log:             log,
+		accessTokenTTL:  accessTokenTTL,
+		refreshTokenTTL: refreshTokenTTL,
+		OAuth:           oauthService,
+	}
+}
+
+func (s *Server) jsonResponce(w http.ResponseWriter, status int, payload any) {
+	resp, err := json.Marshal(payload)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write([]byte(resp))
+}
+
+func (s *Server) respondError(w http.ResponseWriter, code int, message string) {
+	s.jsonResponce(w, code, map[string]string{"error": message})
+}
+
+</file>
+
+<file path="internal/http/handlers/oauth.go">
+package handlers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+)
+
+type OAuthService interface {
+	Login(ctx context.Context, appID int64) (string, string, error)
+	Callback(ctx context.Context, code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, redirectURI string, err error)
+}
+
+func (s *Server) LoginHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var appID string
+		if appID = r.URL.Query().Get("app_id"); appID == "" {
+			s.respondError(w, http.StatusBadRequest, "app_id is required")
+			return
+		}
+
+		aid, err := strconv.Atoi(appID)
+		if err != nil {
+			s.respondError(w, http.StatusBadRequest, "invalid app_id")
+			return
+		}
+
+		state, url, err := s.OAuth.Login(r.Context(), int64(aid))
+		if err != nil {
+			if errors.Is(err, storage.ErrAppNotFound) {
+				s.respondError(w, http.StatusBadRequest, "invalid app_id")
+				return
+			}
+		}
+
+		s.setState(w, state)
+
+		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	}
+}
+
+func (s *Server) CallbackHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		appID, err := s.getAndValidateState(r)
+		if err != nil {
+			s.log.Warn("state validation error", sl.Err(err))
+			s.respondError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+
+		token, refreshToken, uri, err := s.OAuth.Callback(r.Context(), r.FormValue("code"), appID, s.accessTokenTTL, s.refreshTokenTTL)
+		if err != nil {
+			s.log.Warn("get tokens error", sl.Err(err))
+			s.respondError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		s.setRefershToken(w, refreshToken)
+		redirectURL := fmt.Sprintf("%s?token=%s", uri, token)
+		http.Redirect(w, r, redirectURL, http.StatusPermanentRedirect)
+	}
+}
+
+func (s *Server) getAndValidateState(r *http.Request) (int64, error) {
+	oauthState, err := r.Cookie("oauth_state")
+	if err != nil {
+		return 0, err
+	}
+
+	state := r.URL.Query().Get("state")
+	parts := strings.Split(state, ":")
+	if len(parts) < 2 {
+		return 0, err
+	}
+
+	if len(parts[1]) == 0 {
+		return 0, err
+	}
+
+	appID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, err
+	}
+	
+	if oauthState.Value != state {
+		return 0, err
+	}
+
+	return int64(appID), nil
+}
+
+func (s *Server) setState(w http.ResponseWriter, state string) {
+	cookie := &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		HttpOnly: true,
+		MaxAge:   600,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
+	}
+	http.SetCookie(w, cookie)
+}
+
+func (s *Server) setRefershToken(w http.ResponseWriter, token string) {
+	cookie := &http.Cookie{
+		Name:     "refreshToken",
+		Value:    token,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(s.refreshTokenTTL.Seconds()),
+		Secure:   true,
+	}
+	http.SetCookie(w, cookie)
+}
+
+</file>
+
+<file path="internal/lib/jwt/jwt.go">
+package jwt
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+)
+
+type JWTRepository interface {
+	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
+	SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error
+	GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error)
+}
+
+type OAuthCustomClaims struct {
+	AvatarPath string `json:"avatar_path"`
+	jwt.RegisteredClaims
+}
+
+func NewAccessToken(userID, appID int64, accessDuration time.Duration, appSecret string) (accessToken string, err error) {
+	claims := &jwt.RegisteredClaims{
+		Issuer:    fmt.Sprint(appID),
+		Subject:   fmt.Sprint(userID),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	accessToken, err = token.SignedString([]byte(appSecret))
+	if err != nil {
+		return accessToken, err
+	}
+
+	return accessToken, err
+}
+
+func NewOAuthAccessToken(userID, appID int64, accessDuration time.Duration, appSecret, avatarPath string) (accessToken string, err error) {
+	claims := &OAuthCustomClaims{
+		AvatarPath: avatarPath,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    fmt.Sprint(appID),
+			Subject:   fmt.Sprint(userID),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),	
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	accessToken, err = token.SignedString([]byte(appSecret))
+	if err != nil {
+		return accessToken, err
+	}
+
+	return accessToken, err
+}
+
+func NewRefreshToken(userID, appID int64, refreshDuration time.Duration, appSecret string) (refreshToken string, err error) {
+	claims := &jwt.RegisteredClaims{
+		Issuer:    fmt.Sprint(appID),
+		Subject:   fmt.Sprint(userID),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(refreshDuration)),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	refreshToken, err = token.SignedString([]byte(appSecret))
+	if err != nil {
+		return refreshToken, err
+	}
+
+	return refreshToken, err
+}
+
+func NewTokens(userID, appID int64, appSecret string, refreshDuration, accessDuration time.Duration) (accessToken, refreshToken string, err error) {
+	refreshToken, err = NewRefreshToken(userID, appID, refreshDuration, appSecret)
+	if err != nil {
+		return "", "", err
+	}
+
+	accessToken, err = NewAccessToken(userID, appID, accessDuration, appSecret)
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, err
+}
+
+func NewOAuthTokens(userID, appID int64, appSecret, avatarPath string, refreshDuration, accessDuration time.Duration) (accessToken, refreshToken string, err error) {
+	refreshToken, err = NewRefreshToken(userID, appID, refreshDuration, appSecret)
+	if err != nil {
+		return "", "", err
+	}
+
+	accessToken, err = NewOAuthAccessToken(userID, appID, accessDuration, appSecret, avatarPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, err
+}
+
+</file>
+
+<file path="internal/lib/logger/sl/error.go">
+package sl
+
+import "log/slog"
+
+func Err(err error) slog.Attr {
+	return slog.Attr{
+		Key: "error",
+		Value: slog.StringValue(err.Error()),
+	}
+}
+
+</file>
+
+<file path="internal/lib/logger/handlers/discardHandler/discardHandler.go">
+package discardHandler
+
+import (
+	"context"
+	"log/slog"
+)
+
+func NewDiscardLogger() *slog.Logger {
+	return slog.New(NewDiscardHandler())
+}
+
+type DiscardHandler struct{}
+
+func NewDiscardHandler() *DiscardHandler {
+	return &DiscardHandler{}
+}
+
+func (d *DiscardHandler) Handle(_ context.Context, _ slog.Record) error {
+	return nil
+}
+
+func (d *DiscardHandler) WithAttrs(_ []slog.Attr) slog.Handler {
+	return d
+}
+
+func (d *DiscardHandler) WithGroup(_ string) slog.Handler {
+	return d
+}
+
+func (d *DiscardHandler) Enabled(_ context.Context, _ slog.Level) bool {
+	return false
+}
+
+</file>
+
+<file path="internal/lib/encryptor/encryptor_test.go">
+package encryptor
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestE2E_EncryptDecryptString(t *testing.T) {
+	testCases := []struct {
+		name        string
+		masterkey   string
+		data        string
+		isValid     bool
+		expectedErr error
+	}{
+		{
+			name:      "success",
+			masterkey: "1234567890123456", // len = 16
+			data:      "secret information",
+			isValid:   true,
+		},
+		{
+			name:        "invalid masterkey",
+			masterkey:   "12345",
+			data:        "sss",
+			isValid:     false,
+			expectedErr: lenErr,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.isValid {
+				s, err := EncryptString([]byte(tc.masterkey), []byte(tc.data))
+				require.NoError(t, err)
+				ds, err := DecryptString([]byte(tc.masterkey), s)
+				assert.NoError(t, err)
+				assert.Equal(t, tc.data, ds)
+			} else {
+				s, err := EncryptString([]byte(tc.masterkey), []byte(tc.data))
+				assert.Error(t, err)
+				assert.Equal(t, err, lenErr)
+				assert.Empty(t, s)
+			}
+		})
+	}
+}
+
+</file>
+
+<file path="internal/lib/encryptor/encryptor.go">
+package encryptor
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"io"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+var lenErr = errors.New("masterkey must be 16, 24 or 32 characters")
+
+func EncryptString(masterkey []byte, data []byte) (string, error) {
+	switch len(masterkey) {
+	case 16, 24, 32:
+	default:
+		return "", lenErr
+	}
+
+	block, err := aes.NewCipher(masterkey)
+	if err != nil {
+		return "", err
+	}
+
+	aesGSM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, aesGSM.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	seal := aesGSM.Seal(nonce, nonce, data, nil)
+
+	return base64.StdEncoding.EncodeToString(seal), nil
+}
+
+func DecryptString(masterkey []byte, encoded string) (string, error) {
+	switch len(masterkey) {
+	case 16, 24, 32:
+	default:
+		return "", lenErr
+	}
+
+	cipherText, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher(masterkey)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonceSize := gcm.NonceSize()
+	nonce := cipherText[:nonceSize]
+	data := cipherText[nonceSize:]
+
+	plainText, err := gcm.Open(nil, nonce, data, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plainText), nil
+}
+
+type PasswordHasher struct {}
+
+func NewPasswordHasher() *PasswordHasher {
+	return &PasswordHasher{}
+}
+
+func (ph *PasswordHasher) Compare(hash []byte, pw []byte) error {
+	return bcrypt.CompareHashAndPassword(hash, pw)
+}
+
+</file>
+
+<file path="internal/domain/models/user.go">
+package models
+
+import (
+	"database/sql"
+)
+
+type User struct {
+	ID        int64
+	Email     string
+	Username  string
+	PassHash  []byte
+	DeletedAt sql.NullTime
+}
+
+</file>
+
+<file path="internal/domain/models/refresh_token.go">
+package models
+
+type RefreshTokenFields struct {
+	UserID int64 `redis:"uid"`
+	AppId  int64 `redis:"aid"`
+	AppSecret string `redis:"secret"`
+}
+
+</file>
+
+<file path="internal/domain/models/app.go">
+package models
+
+type App struct {
+	ID int64
+	Name string
+	Secret string
+	RedirectURI string
+}
+
+</file>
+
+<file path="internal/domain/models/identifier.go">
+package models
+
+type UserIdentifier struct {
+	ID       *int64
+	Username *string
+	Email    *string
+}
+
+</file>
+
+<file path="internal/services/oauth/oauth.go">
+package oauth
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/jwt"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
+)
+
+type Storage interface {
+	FindOrCreateOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
+	App(ctx context.Context, appID int64) (models.App, error)
+	UserByEmail(ctx context.Context, email string, appID int64) (models.User, error)
+}
+
+type TokenProvider interface {
+	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
+}
+
+type OAuthConfig interface {
+	URL(state string) string
+	Callback(ctx context.Context, code string) (*OAuthUserDetails, error)
+}
+
+type OAuthUserDetails struct {
+	Email    string
+	Username string
+	Avatar   string
+}
+
+type OAuthService struct {
+	config        OAuthConfig
+	storage       Storage
+	tokenProvider TokenProvider
+	log           *slog.Logger
+}
+
+func New(OAuthConfig OAuthConfig, storage Storage, rdb TokenProvider, log *slog.Logger) *OAuthService {
+	return &OAuthService{
+		config:        OAuthConfig,
+		storage:       storage,
+		tokenProvider: rdb,
+		log:           log,
+	}
+}
+
+func (o *OAuthService) Login(ctx context.Context, appID int64) (state string, url string, err error) { // Provider url for permission ask
+	_, err = o.storage.App(ctx, appID)
+	if err != nil {
+		return "", "", err
+	}
+
+	b := make([]byte, 16)
+	rand.Read(b)
+	state = fmt.Sprintf("%s:%d", hex.EncodeToString(b), appID)
+
+	return state, o.config.URL(state), nil
+}
+
+func (o *OAuthService) Callback(ctx context.Context, code string, appID int64, accessTTL, refreshTTL time.Duration) (accessToken string, refreshToken string, redirectURI string, err error) {
+	oauthUser, err := o.config.Callback(ctx, code)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	usr, err := o.storage.FindOrCreateOAuthUser(ctx, oauthUser.Email, oauthUser.Username, appID)
+	if err != nil {
+		o.log.Warn("github oauth callback save user error: ", sl.Err(err))
+		return "", "", "", err
+	}
+
+	app, err := o.storage.App(ctx, appID)
+	if err != nil {
+		o.log.Warn("github oauth callback get app error: ", sl.Err(err))
+		return "", "", "", err
+	}
+
+	accessToken, refreshToken, err = jwt.NewOAuthTokens(usr.ID, app.ID, app.Secret, oauthUser.Avatar, refreshTTL, accessTTL)
+	if err != nil {
+		o.log.Warn("oauth callback get jwt token error: ", sl.Err(err))
+		return "", "", "", err
+	}
+
+	err = o.tokenProvider.SaveRefreshToken(ctx, refreshToken, usr.ID, int64(appID), refreshTTL)
+	if err != nil {
+		o.log.Warn("save refresh token error", sl.Err(err))
+		return "", "", "", err
+	}
+
+	return accessToken, refreshToken, app.RedirectURI, nil
+}
+
+</file>
+
+<file path="internal/services/oauth/github.go">
+package oauth
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+
+	"golang.org/x/oauth2"
+)
+
+type GithubOAuth struct {
+	config     *oauth2.Config
+	userAPIURL string
+}
+
+type GithubUser struct {
+	Email      string `json:"email"`
+	Username   string `json:"login"`
+	AvatarPath string `json:"avatar_url"`
+}
+
+type GithubEmail struct {
+	Email    string `json:"email"`
+	Primary  bool   `json:"primary"`
+	Verified bool   `json:"verified"`
+}
+
+func NewGithubConfig() *GithubOAuth {
+	return &GithubOAuth{
+		config: &oauth2.Config{
+			RedirectURL:  fmt.Sprintf("%s/auth/github/callback", os.Getenv("BASE_URL")),
+			ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+			ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://github.com/login/oauth/authorize",
+				TokenURL: "https://github.com/login/oauth/access_token",
+			},
+			Scopes: []string{"user:email", "read:user"},
+		},
+		userAPIURL: "https://api.github.com/user",
+	}
+}
+
+func (g *GithubOAuth) URL(state string) string {
+	return g.config.AuthCodeURL(state)
+}
+
+func (g *GithubOAuth) Callback(ctx context.Context, code string) (*OAuthUserDetails, error) {
+	const op = "oauth.GitHubOAuthCallback"
+	usr, err := g.getUserDataFromGitHub(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return &OAuthUserDetails{
+		Email:    usr.Email,
+		Username: usr.Username,
+		Avatar:   usr.AvatarPath,
+	}, nil
+}
+
+func (g *GithubOAuth) getUserDataFromGitHub(ctx context.Context, code string) (*GithubUser, error) {
+	token, err := g.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+
+	client := g.config.Client(ctx, token)
+	resp, err := client.Get(g.userAPIURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	usr := &GithubUser{}
+	if err := json.NewDecoder(resp.Body).Decode(&usr); err != nil {
+		return nil, err
+	}
+
+	if usr.Email == "" {
+		email, err := g.getUserEmail(ctx, client)
+		if err != nil {
+			return nil, err
+		}
+		usr.Email = email
+	}
+
+	return usr, err
+}
+
+func (g *GithubOAuth) getUserEmail(ctx context.Context, client *http.Client) (string, error) {
+	resp, err := client.Get("https://api.github.com/user/emails")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github api user/emails returned status %d", resp.StatusCode)
+	}
+
+	var emails []GithubEmail
+	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
+		return "", err
+	}
+
+	for _, email := range emails {
+		if email.Primary && email.Verified {
+			return email.Email, nil
+		}
+	}
+
+	if len(emails) > 0 {
+		return emails[0].Email, nil
+	}
+
+	return "", fmt.Errorf("no email found")
+}
+
+</file>
+
+<file path="internal/services/auth/auth_test.go">
+package auth
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	discardHandler "github.com/synnfluxx/TrustMeBroID/internal/lib/logger/handlers/discardHandler"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+)
+
+const (
+	testAccessTTL  = 3 * time.Minute
+	testRefreshTTL = 24 * time.Hour
+)
+
+var errRedisDown = errors.New("redis down")
+
+type MockStorage struct {
+	mock.Mock
+}
+
+func (m *MockStorage) SaveUser(ctx context.Context, email, username string, passHash []byte, appID int64) (int64, error) {
+	args := m.Called(ctx, email, username, passHash, appID)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *MockStorage) SaveOAuthUser(ctx context.Context, email, username string, appID int64) (models.User, error) {
+	args := m.Called(ctx, email, username, appID)
+	user, _ := args.Get(0).(models.User)
+	return user, args.Error(1)
+}
+
+func (m *MockStorage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
+	args := m.Called(ctx, userID, appID)
+	user, _ := args.Get(0).(models.User)
+	return user, args.Error(1)
+}
+
+func (m *MockStorage) IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error) {
+	args := m.Called(ctx, userID, appID)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockStorage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
+	args := m.Called(ctx, username, appID)
+	user, _ := args.Get(0).(models.User)
+	return user, args.Error(1)
+}
+
+func (m *MockStorage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
+	args := m.Called(ctx, email, appID)
+	user, _ := args.Get(0).(models.User)
+	return user, args.Error(1)
+}
+
+func (m *MockStorage) DeleteUserByUserID(ctx context.Context, userID int64, appID int64) error {
+	args := m.Called(ctx, userID, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) DeleteUserByUsername(ctx context.Context, username string, appID int64) error {
+	args := m.Called(ctx, username, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) DeleteUserByEmail(ctx context.Context, email string, appID int64) error {
+	args := m.Called(ctx, email, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) MakeAdmin(ctx context.Context, userID, appID int64) (int64, error) {
+	args := m.Called(ctx, userID, appID)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *MockStorage) DeleteAdminByUserID(ctx context.Context, userID int64, appID int64) error {
+	args := m.Called(ctx, userID, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) DeleteAdminByUsername(ctx context.Context, username string, appID int64) error {
+	args := m.Called(ctx, username, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
+	args := m.Called(ctx, email, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) App(ctx context.Context, appID int64) (models.App, error) {
+	args := m.Called(ctx, appID)
+	app, _ := args.Get(0).(models.App)
+	return app, args.Error(1)
+}
+
+func (m *MockStorage) RegisterApp(ctx context.Context, appName string, appSecret, redirectURI string) (int64, error) {
+	args := m.Called(ctx, appName, appSecret, redirectURI)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *MockStorage) DeleteApp(ctx context.Context, appID int64) error {
+	args := m.Called(ctx, appID)
+	return args.Error(0)
+}
+
+type MockJWTProvider struct {
+	mock.Mock
+}
+
+func (m *MockJWTProvider) SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error {
+	args := m.Called(ctx, token, userID, appID, ttl)
+	return args.Error(0)
+}
+
+func (m *MockJWTProvider) SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error {
+	args := m.Called(ctx, oldToken, newToken, ttl)
+	return args.Error(0)
+}
+
+func (m *MockJWTProvider) GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error) {
+	args := m.Called(ctx, token)
+	fields, _ := args.Get(0).(*models.RefreshTokenFields)
+	return fields, args.Error(1)
+}
+
+func (m *MockJWTProvider) Logout(ctx context.Context, token string) error {
+	panic("implement me!")
+} // DON'T TESTED
+
+type MockPasswordVerifier struct {
+	mock.Mock
+}
+
+func (m *MockPasswordVerifier) Compare(hash []byte, pw []byte) error {
+	args := m.Called(hash, pw)
+	return args.Error(0)
+}
+
+func newTestAuth() (*Auth, *MockStorage, *MockJWTProvider, *MockPasswordVerifier) {
+	storageMock := new(MockStorage)
+	jwtMock := new(MockJWTProvider)
+	pwMock := new(MockPasswordVerifier)
+
+	authService := New(
+		discardHandler.NewDiscardLogger(),
+		storageMock,
+		storageMock,
+		storageMock,
+		storageMock,
+		jwtMock,
+		pwMock,
+		testAccessTTL,
+		testRefreshTTL,
+	)
+
+	return authService, storageMock, jwtMock, pwMock
+}
+
+func TestAuthLogin(t *testing.T) {
+	testUser := models.User{ID: 42, Email: "test@mail.com", PassHash: []byte("hash")}
+	testApp := models.App{ID: 7, Secret: "secret"}
+
+	tests := []struct {
+		name      string
+		identifier models.UserIdentifier
+		password  string
+		appID     int64
+		mockSetup func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier)
+		wantErr   error
+	}{
+		{
+			name: "success by email",
+			identifier: models.UserIdentifier{
+				Email: strPtr("test@mail.com"),
+			},
+			password: "Password1",
+			appID:    7,
+			mockSetup: func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {
+				s.On("UserByEmail", mock.Anything, "test@mail.com", int64(7)).Return(testUser, nil)
+				p.On("Compare", testUser.PassHash, []byte("Password1")).Return(nil)
+				s.On("App", mock.Anything, int64(7)).Return(testApp, nil)
+				j.On("SaveRefreshToken", mock.Anything, mock.AnythingOfType("string"), int64(42), int64(7), testRefreshTTL).Return(nil)
+			},
+		},
+		{
+			name: "success by username",
+			identifier: models.UserIdentifier{
+				Username: strPtr("user123"),
+			},
+			password: "Password1",
+			appID:    7,
+			mockSetup: func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {
+				s.On("UserByUsername", mock.Anything, "user123", int64(7)).Return(testUser, nil)
+				p.On("Compare", testUser.PassHash, []byte("Password1")).Return(nil)
+				s.On("App", mock.Anything, int64(7)).Return(testApp, nil)
+				j.On("SaveRefreshToken", mock.Anything, mock.AnythingOfType("string"), int64(42), int64(7), testRefreshTTL).Return(nil)
+			},
+		},
+		{
+			name: "invalid identifier",
+			identifier: models.UserIdentifier{},
+			password:   "Password1",
+			appID:      7,
+			mockSetup:  func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {},
+			wantErr:    ErrInvalidIdentifier,
+		},
+		{
+			name: "user not found becomes invalid credentials",
+			identifier: models.UserIdentifier{
+				Email: strPtr("missing@mail.com"),
+			},
+			password: "Password1",
+			appID:    7,
+			mockSetup: func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {
+				s.On("UserByEmail", mock.Anything, "missing@mail.com", int64(7)).Return(models.User{}, storage.ErrUserNotFound)
+			},
+			wantErr: ErrInvalidCredentials,
+		},
+		{
+			name: "password mismatch",
+			identifier: models.UserIdentifier{
+				Email: strPtr("test@mail.com"),
+			},
+			password: "Password1",
+			appID:    7,
+			mockSetup: func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {
+				s.On("UserByEmail", mock.Anything, "test@mail.com", int64(7)).Return(testUser, nil)
+				p.On("Compare", testUser.PassHash, []byte("Password1")).Return(errors.New("bad password"))
+			},
+			wantErr: ErrInvalidCredentials,
+		},
+		{
+			name: "save refresh token failure",
+			identifier: models.UserIdentifier{
+				Email: strPtr("test@mail.com"),
+			},
+			password: "Password1",
+			appID:    7,
+			mockSetup: func(s *MockStorage, j *MockJWTProvider, p *MockPasswordVerifier) {
+				s.On("UserByEmail", mock.Anything, "test@mail.com", int64(7)).Return(testUser, nil)
+				p.On("Compare", testUser.PassHash, []byte("Password1")).Return(nil)
+				s.On("App", mock.Anything, int64(7)).Return(testApp, nil)
+				j.On("SaveRefreshToken", mock.Anything, mock.AnythingOfType("string"), int64(42), int64(7), testRefreshTTL).Return(errRedisDown)
+			},
+			wantErr: errRedisDown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authService, storageMock, jwtMock, pwMock := newTestAuth()
+			tt.mockSetup(storageMock, jwtMock, pwMock)
+
+			accessToken, refreshToken, err := authService.Login(context.Background(), tt.identifier, tt.password, tt.appID)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotEmpty(t, accessToken)
+			require.NotEmpty(t, refreshToken)
+			storageMock.AssertExpectations(t)
+			jwtMock.AssertExpectations(t)
+			pwMock.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAuthRegisterNewUser(t *testing.T) {
+	tests := []struct {
+		name      string
+		email     string
+		username  string
+		password  string
+		appID     int64
+		mockSetup func(s *MockStorage)
+		wantID    int64
+		wantErr   error
+	}{
+		{
+			name:     "success",
+			email:    "test@mail.com",
+			username: "user123",
+			password: "Password1",
+			appID:    1,
+			mockSetup: func(s *MockStorage) {
+				s.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1}, nil)
+				s.On("SaveUser", mock.Anything, "test@mail.com", "user123", mock.AnythingOfType("[]uint8"), int64(1)).Return(11, nil)
+			},
+			wantID: 11,
+		},
+		{
+			name:     "app not found",
+			email:    "test@mail.com",
+			username: "user123",
+			password: "Password1",
+			appID:    1,
+			mockSetup: func(s *MockStorage) {
+				s.On("App", mock.Anything, int64(1)).Return(models.App{}, storage.ErrAppNotFound)
+			},
+			wantErr: storage.ErrAppNotFound,
+		},
+		{
+			name:     "user exists",
+			email:    "test@mail.com",
+			username: "user123",
+			password: "Password1",
+			appID:    1,
+			mockSetup: func(s *MockStorage) {
+				s.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1}, nil)
+				s.On("SaveUser", mock.Anything, "test@mail.com", "user123", mock.AnythingOfType("[]uint8"), int64(1)).Return(0, storage.ErrUserExists)
+			},
+			wantErr: ErrUserExists,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authService, storageMock, _, _ := newTestAuth()
+			tt.mockSetup(storageMock)
+
+			id, err := authService.RegisterNewUser(context.Background(), tt.email, tt.username, tt.password, tt.appID)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.wantID, id)
+			storageMock.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAuthDeleteUser(t *testing.T) {
+	tests := []struct {
+		name       string
+		identifier models.UserIdentifier
+		appID      int64
+		mockSetup  func(s *MockStorage)
+		wantErr    error
+	}{
+		{
+			name: "delete by user id",
+			identifier: models.UserIdentifier{
+				ID: int64Ptr(42),
+			},
+			appID: 1,
+			mockSetup: func(s *MockStorage) {
+				s.On("DeleteUserByUserID", mock.Anything, int64(42), int64(1)).Return(nil)
+			},
+		},
+		{
+			name: "not found",
+			identifier: models.UserIdentifier{
+				Email: strPtr("missing@mail.com"),
+			},
+			appID: 1,
+			mockSetup: func(s *MockStorage) {
+				s.On("DeleteUserByEmail", mock.Anything, "missing@mail.com", int64(1)).Return(storage.ErrUserNotFound)
+			},
+			wantErr: ErrUserNotFound,
+		},
+		{
+			name:       "invalid identifier",
+			identifier: models.UserIdentifier{},
+			appID:      1,
+			mockSetup:  func(s *MockStorage) {},
+			wantErr:    ErrInvalidIdentifier,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authService, storageMock, _, _ := newTestAuth()
+			tt.mockSetup(storageMock)
+
+			err := authService.DeleteUser(context.Background(), tt.identifier, tt.appID)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			storageMock.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAuthRegisterApp(t *testing.T) {
+	prevKey := os.Getenv("MASTER_KEY")
+	require.NoError(t, os.Setenv("MASTER_KEY", "12345678901234567890123456789012"))
+	t.Cleanup(func() {
+		_ = os.Setenv("MASTER_KEY", prevKey)
+	})
+
+	tests := []struct {
+		name      string
+		appName   string
+		redirect  string
+		mockSetup func(s *MockStorage)
+		wantErr   error
+	}{
+		{
+			name:     "success",
+			appName:  "dashboard",
+			redirect: "http://localhost:3000/callback",
+			mockSetup: func(s *MockStorage) {
+				s.On("RegisterApp", mock.Anything, "dashboard", mock.AnythingOfType("string"), "http://localhost:3000/callback").
+					Return(9, nil)
+			},
+		},
+		{
+			name:     "app exists",
+			appName:  "dashboard",
+			redirect: "http://localhost:3000/callback",
+			mockSetup: func(s *MockStorage) {
+				s.On("RegisterApp", mock.Anything, "dashboard", mock.AnythingOfType("string"), "http://localhost:3000/callback").
+					Return(0, storage.ErrAppExists)
+			},
+			wantErr: ErrAppExists,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authService, storageMock, _, _ := newTestAuth()
+			tt.mockSetup(storageMock)
+
+			id, secret, err := authService.RegisterApp(context.Background(), tt.appName, tt.redirect)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, int64(9), id)
+			require.NotEmpty(t, secret)
+			storageMock.AssertExpectations(t)
+		})
+	}
+}
+
+func TestAuthRefreshToken(t *testing.T) {
+	tests := []struct {
+		name      string
+		token     string
+		mockSetup func(s *MockStorage, j *MockJWTProvider)
+		wantErr   error
+	}{
+		{
+			name:  "success from app provider",
+			token: "refresh-token",
+			mockSetup: func(s *MockStorage, j *MockJWTProvider) {
+				j.On("GetRefreshTokenFields", mock.Anything, "refresh-token").
+					Return(&models.RefreshTokenFields{UserID: 42, AppId: 7}, nil)
+				s.On("App", mock.Anything, int64(7)).
+					Return(models.App{ID: 7, Secret: "secret"}, nil)
+			},
+		},
+		{
+			name:  "token not found",
+			token: "missing-token",
+			mockSetup: func(s *MockStorage, j *MockJWTProvider) {
+				j.On("GetRefreshTokenFields", mock.Anything, "missing-token").
+					Return((*models.RefreshTokenFields)(nil), storage.ErrTokenNotFound)
+			},
+			wantErr: storage.ErrTokenNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authService, storageMock, jwtMock, _ := newTestAuth()
+			tt.mockSetup(storageMock, jwtMock)
+
+			token, err := authService.RefreshToken(context.Background(), tt.token)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotEmpty(t, token)
+			storageMock.AssertExpectations(t)
+			jwtMock.AssertExpectations(t)
+		})
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+</file>
+
+<file path="internal/services/auth/auth.go">
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/jwt"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
+	"github.com/synnfluxx/TrustMeBroID/internal/storage"
+	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	//ErrInvalidAppID       = errors.New("invalid app id")
+	ErrUserExists        = errors.New("user already exists")
+	ErrAppExists         = errors.New("app already exists")
+	ErrUserNotFound      = errors.New("user not found")
+	ErrInvalidIdentifier = errors.New("invalid identifier")
+)
+
+type Auth struct {
+	log *slog.Logger
+
+	jwtProvider     JWTProvider
+	usrSaver        UserSaver
+	usrProvider     UserProvider
+	appProvider     AppProvider
+	adminProvider   AdminProvider
+	pwVerifier      PasswordVerifier
+	RefreshTokenTTL time.Duration
+	AccessTokenTTL  time.Duration
+	appSecrets      sync.Map
+}
+
+type UserSaver interface {
+	SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (uid int64, err error)
+	//SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
+}
+
+type UserProvider interface {
+	User(ctx context.Context, userID int64, appID int64) (models.User, error)
+	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
+	UserByUsername(ctx context.Context, username string, appID int64) (models.User, error)
+	UserByEmail(ctx context.Context, email string, appID int64) (models.User, error)
+	DeleteUserByUserID(ctx context.Context, userID int64, appID int64) error
+	DeleteUserByUsername(ctx context.Context, username string, appID int64) error
+	DeleteUserByEmail(ctx context.Context, email string, appID int64) error
+}
+
+type AdminProvider interface {
+	MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, err error)
+	DeleteAdminByUserID(ctx context.Context, userID int64, appID int64) error
+	DeleteAdminByUsername(ctx context.Context, username string, appID int64) error
+	DeleteAdminByEmail(ctx context.Context, email string, appID int64) error
+}
+
+type AppProvider interface {
+	App(ctx context.Context, appID int64) (models.App, error)
+	RegisterApp(ctx context.Context, appName string, appSecret, redirectURI string) (appID int64, err error)
+	DeleteApp(ctx context.Context, appID int64) error
+}
+
+type JWTProvider interface {
+	SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error
+	SetNewRefreshToken(ctx context.Context, oldToken string, newToken string, ttl time.Duration) error
+	GetRefreshTokenFields(ctx context.Context, token string) (*models.RefreshTokenFields, error)
+	Logout(ctx context.Context, token string) error
+}
+
+type PasswordVerifier interface {
+	Compare(hash []byte, pw []byte) error // For tests	// maybe boilerplate a little bit
+}
+
+func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appProvider AppProvider, adminProvider AdminProvider, jwtProvider JWTProvider, passwordVerifier PasswordVerifier, accessTokenTTL, refreshTokenTTL time.Duration) *Auth {
+	return &Auth{
+		log:             log,
+		jwtProvider:     jwtProvider,
+		usrSaver:        userSaver,
+		usrProvider:     userProvider,
+		appProvider:     appProvider,
+		adminProvider:   adminProvider,
+		pwVerifier:      passwordVerifier,
+		AccessTokenTTL:  accessTokenTTL,
+		RefreshTokenTTL: refreshTokenTTL,
+		appSecrets:      sync.Map{},
+	}
+}
+
+func (a *Auth) MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, err error) {
+	const op = "auth.MakeAdmin"
+	log := a.log.With("op", op)
+	log.Info("attempting to make user admin")
+	
+	uid, err = a.adminProvider.MakeAdmin(ctx, userID, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			return 0, fmt.Errorf("%s: %w", op, ErrUserNotFound)
+		}
+		
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	
+	return uid, err
+}
+
+func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (string, string, error) {
+	const op = "auth.Login"
+	log := a.log.With("op", op)
+	log.Info("attempting to login user")
+
+	var user models.User
+	var err error
+	switch {
+	case identifier.Username != nil:
+		user, err = a.usrProvider.UserByUsername(ctx, *identifier.Username, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
+				log.Warn("user not found", sl.Err(err))
+
+				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+			}
+
+			log.Error("failed to get user", sl.Err(err))
+
+			return "", "", fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.Email != nil:
+		user, err = a.usrProvider.UserByEmail(ctx, *identifier.Email, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
+				log.Warn("user not found", sl.Err(err))
+
+				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+			}
+
+			log.Error("failed to get user", sl.Err(err))
+
+			return "", "", fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.ID != nil:
+		user, err = a.usrProvider.User(ctx, *identifier.ID, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
+				log.Warn("user not found", sl.Err(err))
+
+				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+			}
+
+			log.Error("failed to get user", sl.Err(err))
+
+			return "", "", fmt.Errorf("%s: %w", op, err)
+		}
+	default:
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidIdentifier)
+	}
+
+	if err := a.pwVerifier.Compare(user.PassHash, []byte(password)); err != nil {
+		log.Info("invalid credentials", sl.Err(err))
+
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+	}
+
+	app, err := a.appProvider.App(ctx, appID)
+	if err != nil {
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("user logged in successfully")
+
+	accessToken, refreshToken, err := jwt.NewTokens(user.ID, app.ID, app.Secret, a.RefreshTokenTTL, a.AccessTokenTTL)
+	if err != nil {
+		log.Error("failed to generate token", sl.Err(err))
+
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	if err := a.jwtProvider.SaveRefreshToken(ctx, refreshToken, user.ID, app.ID, a.RefreshTokenTTL); err != nil {
+		log.Error("failed to save refresh token", sl.Err(err))
+
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	return accessToken, refreshToken, nil
+}
+
+func (a *Auth) Logout(ctx context.Context, token string) error {
+	const op = "auth.Logout"
+	log := a.log.With("op", op)
+	log.Info("attempting to logout user")
+
+	
+	if err := a.jwtProvider.Logout(ctx, token); err != nil {
+		log.Warn("error logout user", sl.Err(err))
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	return nil
+}
+
+func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {
+	const op = "auth.RegisterNewUser"
+	log := a.log.With(slog.String("op", op))
+	log.Info("registering user")
+
+	_, err := a.appProvider.App(ctx, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAppNotFound) {
+			log.Warn("app not found", sl.Err(err))
+
+			return 0, storage.ErrAppNotFound
+		}
+
+		log.Error("failed to get app", sl.Err(err))
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	passHash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserExists) {
+			log.Warn("user already exists", sl.Err(err))
+
+			return 0, ErrUserExists
+		}
+		log.Error("failed to save user", sl.Err(err))
+
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("user registered")
+
+	return id, nil
+}
+
+func (a *Auth) DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
+	const op = "auth.DeleteUser"
+	log := a.log.With(slog.String("op", op))
+	log.Info("deleting user")
+
+	switch {
+	case identifier.ID != nil:
+		err := a.usrProvider.DeleteUserByUserID(ctx, *identifier.ID, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+				return ErrUserNotFound
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.Username != nil:
+		err := a.usrProvider.DeleteUserByUsername(ctx, *identifier.Username, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+				return ErrUserNotFound
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.Email != nil:
+		err := a.usrProvider.DeleteUserByEmail(ctx, *identifier.Email, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+				return ErrUserNotFound
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	default:
+		return fmt.Errorf("%s: %w", op, ErrInvalidIdentifier)
+	}
+
+	return nil
+}
+
+func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
+	const op = "auth.RefreshToken"
+	log := a.log.With(slog.String("op", op))
+	log.Info("trying to refresh. token", "refreshToken", fmt.Sprintf("***%s", tokenFingerprint(token)))
+
+	data, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
+	if err != nil {
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			return "", storage.ErrTokenNotFound
+		}
+
+		return "", err
+	}
+
+	secret, ok := a.appSecrets.Load(data.AppId)
+	if !ok {
+		log.Info("App secret Is not cached")
+
+		app, err := a.appProvider.App(ctx, data.AppId)
+		if err != nil {
+			return "", err
+		}
+
+		secret = app.Secret
+		a.appSecrets.Store(app.ID, app.Secret)
+	}
+
+	newToken, err := jwt.NewAccessToken(data.UserID, data.AppId, a.AccessTokenTTL, secret.(string))
+	if err != nil {
+		return "", err
+	}
+
+	return newToken, nil
+}
+
+func (a *Auth) IsAdmin(ctx context.Context, UserID int64, appID int64) (bool, error) {
+	const op = "auth.IsAdmin"
+
+	log := a.log.With(slog.String("op", op))
+
+	isAdmin, err := a.usrProvider.IsAdmin(ctx, UserID, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			log.Warn("admin not found", sl.Err(err))
+
+			return false, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
+		}
+
+		if errors.Is(err, storage.ErrAppNotFound) {
+			log.Warn("invalid appID", sl.Err(err))
+
+			return false, fmt.Errorf("%s: %w", op, storage.ErrAppNotFound)
+		}
+
+		return false, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return isAdmin, nil
+}
+
+func (a *Auth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
+	const op = "auth.DeleteAdmin"
+	log := a.log.With(slog.String("op", op))
+	log.Info("deleting admin")
+
+	switch {
+	case identifier.ID != nil:
+		err := a.adminProvider.DeleteAdminByUserID(ctx, *identifier.ID, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.Username != nil:
+		err := a.adminProvider.DeleteAdminByUsername(ctx, *identifier.Username, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	case identifier.Email != nil:
+		err := a.adminProvider.DeleteAdminByEmail(ctx, *identifier.Email, appID)
+		if err != nil {
+			if errors.Is(err, storage.ErrUserNotFound) {
+				log.Warn("user not found", sl.Err(err))
+			}
+
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	default:
+		return fmt.Errorf("%s: %w", op, ErrInvalidIdentifier)
+	}
+
+	return nil
+}
+
+func (a *Auth) RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error) {
+	const op = "auth.RegisterApp"
+	log := a.log.With(slog.String("op", op))
+	log.Info("registering app")
+
+	secretKey := make([]byte, 16)
+	_, err = io.ReadFull(rand.Reader, secretKey)
+	if err != nil {
+		return 0, "", err
+	}
+
+	encrypted, err := encryptor.EncryptString([]byte(os.Getenv("MASTER_KEY")), secretKey)
+	if err != nil {
+		log.Warn("encrypting error", sl.Err(err))
+		return 0, "", err
+	}
+
+	id, err := a.appProvider.RegisterApp(ctx, appName, encrypted, redirectURI)
+	if err != nil {
+		if errors.Is(err, storage.ErrAppExists) {
+			log.Warn("app already exists", sl.Err(err))
+			return 0, "", ErrAppExists
+		}
+
+		log.Warn("register app error", sl.Err(err))
+		return 0, "", ErrInvalidCredentials
+	}
+
+	a.appSecrets.Store(id, hex.EncodeToString(secretKey))
+
+	return id, hex.EncodeToString(secretKey), nil
+}
+
+func (a *Auth) DeleteApp(ctx context.Context, appID int64) error {
+	const op = "auth.DeleteApp"
+	log := a.log.With(slog.String("op", op))
+	log.Info("deleting app")
+
+	err := a.appProvider.DeleteApp(ctx, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAppNotFound) {
+			log.Warn("app not found", sl.Err(err))
+			return storage.ErrAppNotFound
+		}
+
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	a.appSecrets.Delete(appID)
+
+	return nil
+}
+
+func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, error) {
+	const op = "auth.UpdateRefreshToken"
+	log := a.log.With(slog.String("op", op))
+	log.Info("trying to update refresh token", "Old token", fmt.Sprintf("***%s", tokenFingerprint(token)))
+
+	fields, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	secret, ok := a.appSecrets.Load(fields.AppId)
+	if !ok {
+		app, err := a.appProvider.App(ctx, fields.AppId)
+		if err != nil {
+			log.Warn("error", sl.Err(err))
+			return "", fmt.Errorf("%s: %w", op, err)
+		}
+		secret = app.Secret
+	}
+
+	refreshToken, err := jwt.NewRefreshToken(fields.UserID, fields.AppId, a.RefreshTokenTTL, secret.(string))
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	err = a.jwtProvider.SetNewRefreshToken(ctx, token, refreshToken, a.RefreshTokenTTL)
+	if err != nil {
+		log.Warn("error", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	return refreshToken, nil
+}
+
+func tokenFingerprint(token string) string {
+	if token == "" {
+		return "empty"
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
+}
+
+</file>
+
+<file path="README.md">
+TrustMeBroID - it's a best sso service designed for best pet projects
+
+---
+
+## API
+
+### gRPC
+
+Admin methods require the `x-admin-token` metadata header.
+
+| Method        | Auth  | Description                             |
+| ------------- | ----- | --------------------------------------- |
+| `Register`    | —     | Register a new user in an App           |
+| `Login`       | —     | Login by email or username, returns JWT |
+| `IsAdmin`     | —     | Check if a user has admin role          |
+| `RegisterApp` | admin | Create a new App                        |
+| `DeleteApp`   | admin | Delete an App                           |
+| `DeleteUser`  | admin | Delete a user by email / username / ID  |
+| `DeleteAdmin` | admin | Revoke admin role                       |
+| `MakeAdmin`   | admin | Add Admin user from existing one        |
+
+### HTTP
+
+| Endpoint                      | Method | Description                                  |
+| ----------------------------- | ------ | -------------------------------------------- |
+| `/auth/github/login?app_id=X` | GET    | Redirect to GitHub OAuth                     |
+| `/auth/github/callback`       | GET    | OAuth callback, redirects to `uri?token=JWT` |
+
+</file>
+
+<file path=".env">
+MASTER_KEY=9ee478c4b87b9b8e603447dbfb26a093
+ADMIN_TOKEN=5b5fc7dd7c324d8c0c04b5057a856e18
+HTTP_BIND_ADDR=:7171
+GITHUB_CLIENT_ID=Ov23liRkbUCOznI3ppJk
+GITHUB_CLIENT_SECRET=90f73e43e347fbb594cb9bb6296c3802188e8708
+BASE_URL=http://localhost:7171
+LOCAL_URL=http://localhost:7171
+DB_USER=mxwq
+DB_PASSWORD=9ee478c4b87b9b8e603447dbfb26a093
+DB_NAME=sso
+CONFIG_PATH=/app/config/local.yaml
+REFRESH_KEY=5b5fc7dd7c324d8c0c04b5057a856e18
+REDIS_PW=9ee478c4b87b9b8e603447dbfb26a093
+
+</file>
+
+<file path=".gocache/trim.txt">
+1777569685
+</file>
+
+<file path="docker-compose.yml">
+services:
+    postgres-sso:
+        image: postgres:alpine
+        ports:
+            - 5432:5432
+        restart: always
+        env_file:
+            - .env
+        environment:
+            POSTGRES_USER: ${DB_USER}
+            POSTGRES_PASSWORD: ${DB_PASSWORD}
+            POSTGRES_DB: ${DB_NAME}
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+            interval: 1s
+            timeout: 5s
+            retries: 3
+        networks:
+            - shared-net
+    redis-sso:
+        image: redis:latest
+        ports:
+            - 6379:6379
+        restart: always
+        env_file:
+            - .env
+        healthcheck:
+            test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+            interval: 1s
+            timeout: 3s
+            retries: 5
+        networks:
+            - shared-net
+
+    migrator:
+        image: migrate/migrate
+        networks:
+            - shared-net
+        env_file:
+            - .env
+        depends_on:
+            postgres-sso:
+                condition: service_healthy
+        volumes:
+            - ./migrations:/migrations
+        command:
+            [
+                "-path",
+                "/migrations/",
+                "-database",
+                "postgres://${DB_USER}:${DB_PASSWORD}@postgres-sso:5432/${DB_NAME}?sslmode=disable",
+                "up",
+            ]
+
+    sso:
+        build: .
+        ports:
+            - "1337:1337"
+            - "7171:7171"
+        volumes:
+            - ./storage:/app/storage
+            - ./config:/app/config
+        env_file:
+            - .env
+        environment:
+            - PGSSLMODE=disable
+        networks:
+            - shared-net
+        depends_on:
+            migrator:
+                condition: service_completed_successfully
+            redis-sso:
+                condition: service_healthy
+
+networks:
+    shared-net:
+        external: true
+
+</file>
+
+<file path=".env.example">
+MASTER_KEY=<your-secret-key>
+ADMIN_TOKEN=<your-"x-admin"-token>
+HTTP_BIND_ADDR=:7171
+GITHUB_CLIENT_ID=<github creds for github OAuth>
+GITHUB_CLIENT_SECRET=<github creds for github OAuth>
+BASE_URL=http://localhost:7171
+LOCAL_URL=http://localhost:7171
+DB_USER=<username for access to db in docker>
+DB_PASSWORD=<pw for access to db in docker>
+DB_NAME=<db name in docker>
+CONFIG_PATH=/app/config/local.yaml
+REFRESH_KEY=<>
+
+</file>
+
+<file path=".vscode/settings.json">
+{
+  "cSpell.words": ["unrequired"]
+}
+
+</file>
+
+<file path=".idea/queries/Query.sql">
+
+</file>
+
+</source>
+</onefilellm_output>

@@ -1,22 +1,28 @@
-version: '3'
+version: "3"
 
 tasks:
-  migrateUp:
-    aliases:
-      - up
-    desc: 'Apply all migrations'
-    cmds:
-      - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations
-  migrateDown:
-    aliases:
-      - down
-    desc: 'Rollback all migrations'
-    cmds:
-      - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations -down
+    migrateUp:
+        aliases:
+            - up
+        desc: "Apply all migrations"
+        cmds:
+            - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations
+    migrateDown:
+        aliases:
+            - down
+        desc: "Rollback all migrations"
+        cmds:
+            - go run ./cmd/migrator --storage-path=./storage/sso.db --migrations-path=./migrations -down
 
-  build:
-    aliases:
-      - bl
-    desc: 'Build main.go'
-    cmds:
-      - go build -o bin/sso cmd/sso/main.go
+    build:
+        aliases:
+            - bl
+        desc: "Build main.go"
+        cmds:
+            - go build -o bin/sso cmd/sso/main.go
+    compose:
+        desc: "docker-compose"
+        cmds:
+            - docker-compose down -v
+            - docker-compose up -d --build
+            - docker-compose logs -f

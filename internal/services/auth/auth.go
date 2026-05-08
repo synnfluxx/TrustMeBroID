@@ -402,7 +402,7 @@ func (a *Auth) RegisterApp(ctx context.Context, appName, redirectURI string) (ap
 		return 0, "", err
 	}
 
-	encrypted, err := encryptor.EncryptString([]byte(os.Getenv("MASTER_KEY")), secretKey)
+	encrypted, err := encryptor.EncryptString([]byte(os.Getenv("MASTER_KEY")), []byte(hex.EncodeToString(secretKey)))
 	if err != nil {
 		log.Warn("encrypting error", sl.Err(err))
 		return 0, "", err

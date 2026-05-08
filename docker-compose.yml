@@ -1,5 +1,5 @@
 services:
-    postgres:
+    postgres-sso:
         image: postgres:alpine
         ports:
             - 5432:5432
@@ -15,7 +15,9 @@ services:
             interval: 1s
             timeout: 5s
             retries: 3
-    redis:
+        networks:
+            - shared-net
+    redis-sso:
         image: redis:latest
         ports:
             - 6379:6379
@@ -27,17 +29,28 @@ services:
             interval: 1s
             timeout: 3s
             retries: 5
+        networks:
+            - shared-net
 
     migrator:
         image: migrate/migrate
+        networks:
+            - shared-net
         env_file:
             - .env
         depends_on:
-            postgres:
+            postgres-sso:
                 condition: service_healthy
         volumes:
             - ./migrations:/migrations
-        command: ["-path", "/migrations/", "-database", "postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable", "up"]
+        command:
+            [
+                "-path",
+                "/migrations/",
+                "-database",
+                "postgres://${DB_USER}:${DB_PASSWORD}@postgres-sso:5432/${DB_NAME}?sslmode=disable",
+                "up",
+            ]
 
     sso:
         build: .
@@ -51,8 +64,14 @@ services:
             - .env
         environment:
             - PGSSLMODE=disable
+        networks:
+            - shared-net
         depends_on:
             migrator:
                 condition: service_completed_successfully
-            redis:
+            redis-sso:
                 condition: service_healthy
+
+networks:
+    shared-net:
+        external: true

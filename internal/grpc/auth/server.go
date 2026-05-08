@@ -331,6 +331,21 @@ func (s *serverAPI) UpdateRefreshToken(ctx context.Context, req *ssov1.UpdateRef
 	}, nil
 }
 
+func (s *serverAPI) RefreshAccessToken(ctx context.Context, req *ssov1.RefreshTokenRequest) (*ssov1.RefreshTokenResponse, error) {
+	token, err := s.auth.RefreshToken(ctx, req.GetRefreshToken())
+	if err != nil {
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "refresh token not found")
+		}
+
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ssov1.RefreshTokenResponse{
+		NewToken: token,
+	}, nil
+}
+
 func validate(email, password string) error {
 	if email != "" {
 		if err := validation.Validate(email, validation.Required, is.Email); err != nil {
