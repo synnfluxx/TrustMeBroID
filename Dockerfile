@@ -15,6 +15,7 @@ FROM alpine:latest
 WORKDIR /app
 
 COPY --from=builder /app/sso .
+COPY config/ /app/config/
 
 EXPOSE 1337
 CMD ["./sso"]
