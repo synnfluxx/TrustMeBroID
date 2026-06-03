@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE TABLE IF NOT EXISTS admins (
     id    SERIAL PRIMARY KEY,
     email TEXT NOT NULL,
@@ -8,3 +9,6 @@ CREATE TABLE IF NOT EXISTS admins (
     UNIQUE(email, app_id),
     UNIQUE(username, app_id)
 );
+
+-- +goose Down
+DROP TABLE admins;

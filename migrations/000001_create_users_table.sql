@@ -1,4 +1,4 @@
--- migrations/1_init.up.sql
+-- +goose Up
 
 CREATE TABLE IF NOT EXISTS apps
 (
@@ -27,3 +27,7 @@ CREATE TABLE IF NOT EXISTS users
 );
 
 CREATE INDEX IF NOT EXISTS idx_email ON users (app_id, email);
+
+-- +goose Down
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS apps;
