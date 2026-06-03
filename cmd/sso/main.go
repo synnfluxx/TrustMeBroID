@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/dusted-go/logging/v2/handlers/prettylog"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	"github.com/pressly/goose/v3"
 	"github.com/synnfluxx/TrustMeBroID/internal/app"
@@ -35,7 +36,7 @@ func main() {
 		}
 		panic(err)
 	}
-	
+
 	log.Info("starting sso server")
 
 	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
