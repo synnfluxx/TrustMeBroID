@@ -68,7 +68,7 @@ func runMigrations(dsn string) error {
 	}
 	defer db.Close()
 
-	return goose.Up(db, "migrations")
+	return goose.Up(db, ".")
 }
 
 func setupLogger(env string) *slog.Logger {
