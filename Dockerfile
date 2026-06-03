@@ -16,6 +16,7 @@ WORKDIR /app
 
 COPY --from=builder /app/sso .
 COPY config/ /app/config/
+COPY migrations/ /app/migrations
 
 EXPOSE 1337
 CMD ["./sso"]
