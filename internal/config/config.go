@@ -40,10 +40,11 @@ type PostgresConfig struct {
 }
 
 type RedisConfig struct {
-	Port    int           `yaml:"port"`
-	Host    string        `yaml:"host"`
-	Timeout time.Duration `yaml:"timeout"`
-	Retries int           `yaml:"retires"`
+	ConnectionString string        `yaml:"connection_string"`
+	Port             int           `yaml:"port"`
+	Host             string        `yaml:"host"`
+	Timeout          time.Duration `yaml:"timeout"`
+	Retries          int           `yaml:"retires"`
 }
 
 func (c *PostgresConfig) mustSetConnectionString() {
@@ -51,7 +52,7 @@ func (c *PostgresConfig) mustSetConnectionString() {
 		c.ConnectionString = connStr
 		return
 	}
-	
+
 	user, pw, name := os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME")
 
 	if user == "" || pw == "" || name == "" {
@@ -85,6 +86,8 @@ func MustLoadByPath(path string) *Config {
 
 	os.Setenv("ENV", cfg.Env)
 
+	cfg.Redis.ConnectionString = os.Getenv("REDIS_CONNECTION_STRING")
+	
 	return &cfg
 }
 

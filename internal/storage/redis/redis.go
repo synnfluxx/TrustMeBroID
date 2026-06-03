@@ -15,7 +15,22 @@ type Storage struct {
 	rdb *redis.Client
 }
 
-func NewRedis(host string, timeout time.Duration, retries int) (*Storage, error) {
+func NewRedis(host string, timeout time.Duration, retries int, connStr string) (*Storage, error) {
+	if connStr != "" {
+		opt, err := redis.ParseURL(connStr)
+		if err != nil {
+			return nil, err
+		}
+		client := redis.NewClient(opt)
+		if err := client.Ping(ctx).Err(); err != nil {
+			return nil, err
+		}
+
+		return &Storage{
+			rdb: client,
+		}, nil
+	}
+
 	client := redis.NewClient(&redis.Options{
 		Addr:        host,
 		Password:    os.Getenv("REDIS_PW"),
