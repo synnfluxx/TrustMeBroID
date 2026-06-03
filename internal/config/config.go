@@ -47,6 +47,11 @@ type RedisConfig struct {
 }
 
 func (c *PostgresConfig) mustSetConnectionString() {
+	if connStr := os.Getenv("DB_CONNECTION_STRING"); connStr != "" {
+		c.ConnectionString = connStr
+		return
+	}
+	
 	user, pw, name := os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME")
 
 	if user == "" || pw == "" || name == "" {
