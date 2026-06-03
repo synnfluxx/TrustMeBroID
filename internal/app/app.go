@@ -20,13 +20,13 @@ type App struct {
 	HTTPSrv *httpApp.App
 }
 
-func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration) *App {
+func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost, redisConnStr string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration) *App {
 	storage, err := postgres.New(storagePath)
 	if err != nil {
 		panic(err)
 	}
 
-	redis, err := redisStorage.NewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries)
+	redis, err := redisStorage.NewRedis(fmt.Sprintf("%s:%d", redisHost, redisPort), redisTimeout, redisRetries, redisConnStr)
 	if err != nil {
 		panic(err)
 	}

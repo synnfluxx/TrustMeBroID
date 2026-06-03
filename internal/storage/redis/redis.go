@@ -21,6 +21,10 @@ func NewRedis(host string, timeout time.Duration, retries int, connStr string) (
 		if err != nil {
 			return nil, err
 		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		
 		client := redis.NewClient(opt)
 		if err := client.Ping(ctx).Err(); err != nil {
 			return nil, err

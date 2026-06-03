@@ -39,7 +39,7 @@ func main() {
 
 	log.Info("starting sso server")
 
-	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
+	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.ConnectionString, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
 
 	go application.GRPCSrv.MustRun()
 	go application.HTTPSrv.MustRun()
