@@ -42,7 +42,7 @@ func main() {
 	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.ConnectionString, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
 
 	go application.GRPCSrv.MustRun()
-	//go application.HTTPSrv.MustRun()
+	go application.HTTPSrv.MustRun()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -51,10 +51,10 @@ func main() {
 	log.Info("stopping application", slog.String("signal", sig.String()))
 
 	application.GRPCSrv.Stop()
-	/*err := application.HTTPSrv.Stop()
+	err := application.HTTPSrv.Stop()
 	if err != nil {
 		log.Warn("error while trying to close http server")
-		}*/
+	}
 
 	log.Info("application stop")
 }
