@@ -31,27 +31,6 @@ services:
             retries: 5
         networks:
             - shared-net
-
-    migrator:
-        image: migrate/migrate
-        networks:
-            - shared-net
-        env_file:
-            - .env
-        depends_on:
-            postgres-sso:
-                condition: service_healthy
-        volumes:
-            - ./migrations:/migrations
-        command:
-            [
-                "-path",
-                "/migrations/",
-                "-database",
-                "postgres://${DB_USER}:${DB_PASSWORD}@postgres-sso:5432/${DB_NAME}?sslmode=disable",
-                "up",
-            ]
-
     sso:
         build: .
         ports:
