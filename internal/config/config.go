@@ -60,7 +60,7 @@ func (c *PostgresConfig) mustSetConnectionString() {
 		panic("postgres field must be filled")
 	}
 
-	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslomode=%s", user, pw, c.Host, c.Port, name, c.SSLMode)
+	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s", user, pw, c.Host, c.Port, name, c.SSLMode)
 }
 
 func MustLoad() *Config {
