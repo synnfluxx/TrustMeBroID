@@ -16,23 +16,28 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Для сборки внутри GitHub этого токена достаточно
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: docker/metadata-action@v5
+      - name: Extract metadata (tags, labels) for Docker
+        uses: docker/metadata-action@v5
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: type=raw,value=latest
 
-      - uses: docker/build-push-action@v5
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
@@ -45,14 +50,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: appleboy/ssh-action@v1.0.3
+      - name: Deploy via SSH to VPS
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          host: 31.76.46.51
+          username: root
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             cd /opt/projects/sso
+            
+            # Авторизуемся в GHCR на сервере через твой personal token
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u synnfluxx --password-stdin
+            
+            # Стягиваем обновленный образ приложения
             docker compose pull sso
+            
+            # Перезапускаем только sso, не трогая работающие postgres и redis
             docker compose up -d --no-deps sso
+            
+            # Чистим старые зависшие образы, чтобы не забивать диск на VPS
             docker image prune -f
