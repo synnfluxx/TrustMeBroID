@@ -42,7 +42,7 @@ services:
       retries: 5
 
   sso:
-    build: .
+    image: ghcr.io/synnfluxx/trustmebroid:latest
     ports:
       - "1337:1337"
       - "7171:7171"
