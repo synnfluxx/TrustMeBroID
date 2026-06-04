@@ -1,56 +1,72 @@
 services:
-    postgres-sso:
-        image: postgres:alpine
-        ports:
-            - 5432:5432
-        restart: always
-        env_file:
-            - .env
-        environment:
-            POSTGRES_USER: ${DB_USER}
-            POSTGRES_PASSWORD: ${DB_PASSWORD}
-            POSTGRES_DB: ${DB_NAME}
-        healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-            interval: 1s
-            timeout: 5s
-            retries: 3
-        networks:
-            - shared-net
-    redis-sso:
-        image: redis:latest
-        ports:
-            - 6379:6379
-        restart: always
-        env_file:
-            - .env
-        healthcheck:
-            test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
-            interval: 1s
-            timeout: 3s
-            retries: 5
-        networks:
-            - shared-net
-    sso:
-        build: .
-        ports:
-            - "1337:1337"
-            - "7171:7171"
-        volumes:
-            - ./storage:/app/storage
-            - ./config:/app/config
-        env_file:
-            - .env
-        environment:
-            - PGSSLMODE=disable
-        networks:
-            - shared-net
-        depends_on:
-            migrator:
-                condition: service_completed_successfully
-            redis-sso:
-                condition: service_healthy
+  postgres-sso:
+    image: postgres:alpine
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    command: >
+      postgres
+        -c max_connections=30
+        -c shared_buffers=32MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=32MB
+    volumes:
+      - postgres_sso_data:/var/lib/postgresql/data
+    networks:
+      - shared-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-sso:
+    image: redis:alpine
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru --save ""
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          cpus: "0.25"
+    networks:
+      - shared-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  sso:
+    build: .
+    ports:
+      - "1337:1337"
+      - "7171:7171"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.5"
+    volumes:
+      - ./config:/app/config
+    env_file:
+      - .env
+    networks:
+      - shared-net
+    depends_on:
+      postgres-sso:
+        condition: service_healthy
+      redis-sso:
+        condition: service_healthy
+    restart: unless-stopped
 
 networks:
-    shared-net:
-        external: true
+  shared-net:
+    external: true
+
+volumes:
+  postgres_sso_data:

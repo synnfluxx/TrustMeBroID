@@ -1,21 +1,13 @@
-FROM golang:1.25.7-alpine AS builder
-
-RUN apk add --no-cache gcc musl-dev
-
-WORKDIR /build
+FROM golang:1.23-alpine AS builder
+WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
-
-RUN CGO_ENABLED=1 go build -ldflags="-w -s -extldflags '-static'" -o /app/sso ./cmd/sso/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o sso ./cmd/sso/main.go
 
 FROM alpine:latest
-
+RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
-
 COPY --from=builder /app/sso .
-COPY config/ /app/config/
-
-EXPOSE 1337
+COPY --from=builder /app/config ./config
 CMD ["./sso"]
