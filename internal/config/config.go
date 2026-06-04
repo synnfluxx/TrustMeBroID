@@ -37,6 +37,7 @@ type PostgresConfig struct {
 	Host             string        `yaml:"host"`
 	ConnectionString string        `yaml:"-"`
 	ReaperDelay      time.Duration `yaml:"reaper_delay"`
+	SSLMode          string          `yaml:"sslmode"`
 }
 
 type RedisConfig struct {
@@ -59,7 +60,7 @@ func (c *PostgresConfig) mustSetConnectionString() {
 		panic("postgres field must be filled")
 	}
 
-	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s", user, pw, c.Host, c.Port, name)
+	c.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslomode=%s", user, pw, c.Host, c.Port, name, c.SSLMode)
 }
 
 func MustLoad() *Config {
@@ -87,7 +88,7 @@ func MustLoadByPath(path string) *Config {
 	os.Setenv("ENV", cfg.Env)
 
 	cfg.Redis.ConnectionString = os.Getenv("REDIS_CONNECTION_STRING")
-	
+
 	return &cfg
 }
 
