@@ -130,6 +130,11 @@ jobs:
               exit 1
             fi
 
+            # Перезапускаем bootstrap вместе с SSO. run --rm игнорирует
+            # restart: 'no' и падает с ошибкой при конфликте конфигурации.
+            docker_cmd compose build sso-app-init
+            docker_cmd compose run --rm --no-deps sso-app-init
+
             # Сохраняем структуру обеих баз без данных.
             mkdir -p schema-dumps
 
