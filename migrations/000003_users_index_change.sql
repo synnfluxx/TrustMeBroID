@@ -1,6 +1,6 @@
 -- +goose Up
-DROP INDEX IF EXISTS users_email_app_id_key;
-DROP INDEX IF EXISTS users_username_app_id_key;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_app_id_key;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_app_id_key;
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_app_id_active_key
     ON users (email, app_id) WHERE deleted_at IS NULL;
