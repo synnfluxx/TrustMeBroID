@@ -17,14 +17,17 @@ CREATE TABLE IF NOT EXISTS users
     app_id       INTEGER NOT NULL,
     deleted_at   TIMESTAMP,
 
-    UNIQUE(email, app_id),
-    UNIQUE(username, app_id),
-
     CONSTRAINT fk_app
         FOREIGN KEY (app_id)
         REFERENCES apps (id)
         ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_app_id_active_key
+    ON users (email, app_id) WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_app_id_active_key
+    ON users (username, app_id) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_email ON users (app_id, email);
 

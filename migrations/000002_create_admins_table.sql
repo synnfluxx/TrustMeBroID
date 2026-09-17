@@ -1,13 +1,12 @@
 -- +goose Up
 CREATE TABLE IF NOT EXISTS admins (
-    id    SERIAL PRIMARY KEY,
-    email TEXT NOT NULL,
-    username TEXT NOT NULL,
-    app_id INTEGER NOT NULL,
-    FOREIGN KEY (email, app_id) REFERENCES users(email, app_id) ON UPDATE CASCADE ON DELETE CASCADE,
+    id      SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    app_id  INTEGER NOT NULL,
 
-    UNIQUE(email, app_id),
-    UNIQUE(username, app_id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+
+    UNIQUE(user_id, app_id)
 );
 
 -- +goose Down
