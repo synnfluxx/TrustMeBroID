@@ -74,7 +74,20 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 	const op = "storage.postgres.SaveUser"
 
 	var id int64
-	err := s.db.QueryRowContext(ctx, "INSERT INTO users(email, username, pass_hash, app_id) VALUES($1, $2, $3, $4) RETURNING id", email, username, passHash, appID).Scan(&id)
+	
+	query := `
+		WITH cleanup AS (
+			DELETE FROM users
+			WHERE (email = $1 OR username = $2)
+			  AND app_id = $4
+			  AND deleted_at IS NOT NULL
+		)
+		INSERT INTO users(email, username, pass_hash, app_id) 
+		VALUES($1, $2, $3, $4) 
+		RETURNING id
+	`
+
+	err := s.db.QueryRowContext(ctx, query, email, username, passHash, appID).Scan(&id)
 	if err != nil {
 		var pqErr *pq.Error
 
@@ -116,7 +129,7 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 
 func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		userID,
 		appID,
 	)
@@ -124,7 +137,7 @@ func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.U
 
 func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		email,
 		appID,
 	)
@@ -132,7 +145,7 @@ func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (m
 
 func (s *Storage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2",
+		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		appID,
 		username,
 	)
@@ -189,7 +202,10 @@ func (s *Storage) MakeAdmin(ctx context.Context, userID, appID int64) (int64, er
 	const op = "storage.postgres.MakeAdmin"
 
 	var aid int64
-	err := s.db.QueryRowContext(ctx, "INSERT INTO admins (id, email, username, app_id) SELECT id, email, username, app_id FROM users WHERE id = $1 AND app_id = $2 RETURNING id", userID, appID).Scan(&aid)
+	err := s.db.QueryRowContext(ctx,
+		"INSERT INTO admins (user_id, app_id) SELECT id, app_id FROM users WHERE id = $1 AND app_id = $2 RETURNING id",
+		userID, appID,
+	).Scan(&aid)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
@@ -201,14 +217,9 @@ func (s *Storage) IsAdmin(ctx context.Context, id int64, appID int64) (bool, err
 	const op = "storage.postgres.IsAdmin"
 
 	var isAdmin bool
-	row := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM admins WHERE id = $1 AND app_id = $2)", id, appID)
+	row := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM admins WHERE user_id = $1 AND app_id = $2)", id, appID)
 
-	err := row.Scan(&isAdmin)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
-		}
-
+	if err := row.Scan(&isAdmin); err != nil {
 		return false, fmt.Errorf("%s: %w", op, err)
 	}
 
@@ -235,15 +246,28 @@ func (s *Storage) deleteAdmin(ctx context.Context, query string, args ...any) er
 	return nil
 }
 
-func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
-	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND email = $2", appID, email)
+func (s *Storage) DeleteAdminByUserID(ctx context.Context, userID, appID int64) error {
+	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND user_id = $2", appID, userID)
 }
 
 func (s *Storage) DeleteAdminByUsername(ctx context.Context, username string, appID int64) error {
-	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND username = $2", appID, username)
+	return s.deleteAdmin(ctx, `
+		DELETE FROM admins
+		USING users
+		WHERE admins.user_id = users.id
+		  AND admins.app_id = $1
+		  AND users.username = $2
+	`, appID, username)
 }
-func (s *Storage) DeleteAdminByUserID(ctx context.Context, userID, appID int64) error {
-	return s.deleteAdmin(ctx, "DELETE FROM admins WHERE app_id = $1 AND id = $2", appID, userID)
+
+func (s *Storage) DeleteAdminByEmail(ctx context.Context, email string, appID int64) error {
+	return s.deleteAdmin(ctx, `
+		DELETE FROM admins
+		USING users
+		WHERE admins.user_id = users.id
+		  AND admins.app_id = $1
+		  AND users.email = $2
+	`, appID, email)
 }
 
 func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
