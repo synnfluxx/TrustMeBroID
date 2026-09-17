@@ -1,0 +1,149 @@
+name: Deploy SSO
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: sso-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: synnfluxx/trustmebroid
+
+jobs:
+  build-and-push:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to server
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        with:
+          host: 95.31.178.182
+          username: daniil
+          password: ${{ secrets.SERVER_PASSWORD }}
+          envs: GHCR_TOKEN,SERVER_PASSWORD
+          command_timeout: 20m
+          script: |
+            set -eu
+            umask 077
+
+            cd /home/daniil/projects/auralifting
+
+            # Определяем, нужен ли sudo для Docker.
+            USE_SUDO=0
+            if ! docker info >/dev/null 2>&1; then
+              USE_SUDO=1
+            fi
+
+            docker_cmd() {
+              if [ "$USE_SUDO" = "1" ]; then
+                printf '%s\n' "$SERVER_PASSWORD" |
+                  sudo -S -p '' -v
+                sudo -n docker "$@"
+              else
+                docker "$@"
+              fi
+            }
+
+            docker_cmd info >/dev/null
+            docker_cmd compose config --quiet
+
+            # Авторизация в том же окружении, где запускается Docker.
+            printf '%s' "$GHCR_TOKEN" |
+              docker_cmd login ghcr.io \
+                -u synnfluxx \
+                --password-stdin
+
+            # Обновляем только SSO.
+            docker_cmd compose pull sso
+            docker_cmd compose up -d --no-deps sso
+
+            # Ждём, пока SSO начнёт принимать соединения на gRPC и HTTP портах.
+            HEALTHY=0
+            for attempt in $(seq 1 30); do
+              if timeout 3 bash -c '</dev/tcp/127.0.0.1/1337' 2>/dev/null &&
+                 timeout 3 bash -c '</dev/tcp/127.0.0.1/7171' 2>/dev/null; then
+                HEALTHY=1
+                break
+              fi
+              sleep 3
+            done
+
+            if [ "$HEALTHY" != "1" ]; then
+              echo "SSO health check failed."
+              docker_cmd compose ps -a
+              docker_cmd compose logs --tail=100 sso
+              exit 1
+            fi
+
+            # Сохраняем структуру обеих баз без данных.
+            mkdir -p schema-dumps
+
+            docker_cmd compose exec -T postgres-sso \
+              sh -c 'pg_dump -U "$POSTGRES_USER" -d auralift --schema-only' \
+              > schema-dumps/sso.sql.tmp
+            mv schema-dumps/sso.sql.tmp schema-dumps/sso.sql
+
+            docker_cmd compose exec -T postgres-sso \
+              sh -c 'pg_dump -U "$POSTGRES_USER" -d auralifting --schema-only' \
+              > schema-dumps/auralift.sql.tmp
+            mv schema-dumps/auralift.sql.tmp schema-dumps/auralift.sql
+
+            docker_cmd image prune -a -f \
+              --filter "label=org.opencontainers.image.source=https://github.com/synnfluxx/trustmebroid"
+
+            echo "SSO deployed successfully."
