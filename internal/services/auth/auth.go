@@ -213,6 +213,7 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 	const op = "auth.RegisterNewUser"
 	log := a.log.With(slog.String("op", op))
 	log.Info("registering user")
+	log.Debug("Credentials", slog.String("password", pass), slog.String("email", email), slog.String("username", username), slog.Int64("appID", appID)) //TODO: Remove this line after testing
 
 	_, err := a.appProvider.App(ctx, appID)
 	if err != nil {
