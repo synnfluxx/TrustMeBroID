@@ -28,7 +28,7 @@ var PassErr = errors.New("password must be at least 8 characters long and includ
 
 type Auth interface {
 	Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (accessToken, refreshToken string, err error)
-	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, err error)
+	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, verificationCode string, err error)
 	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
 	RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error)
 	DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error
@@ -142,7 +142,7 @@ func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
 
-	userID, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetUsername(), req.GetPassword(), req.GetAppId())
+	userID, verificationCode, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetUsername(), req.GetPassword(), req.GetAppId())
 	if err != nil {
 		if errors.Is(err, auth.ErrUserExists) {
 			return nil, status.Error(codes.AlreadyExists, "user already exists")
@@ -153,6 +153,7 @@ func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*
 
 	return &ssov1.RegisterResponse{
 		UserId: userID,
+		VerificationToken: verificationCode,
 	}, nil
 }
 

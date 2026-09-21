@@ -19,7 +19,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	gitlab.com/synnfluxx/protos v0.0.0-20260921172841-370c6f6544e7
+	gitlab.com/synnfluxx/protos v0.0.0-20260921201119-12a62dc7a828
 	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0

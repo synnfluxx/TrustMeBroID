@@ -29,6 +29,7 @@ var (
 	ErrAppExists         = errors.New("app already exists")
 	ErrUserNotFound      = errors.New("user not found")
 	ErrInvalidIdentifier = errors.New("invalid identifier")
+	ErrUserNotVerified   = errors.New("user not verified")
 )
 
 type Auth struct {
@@ -180,6 +181,12 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
+	if !user.IsVerified {
+		log.Warn("user email not verified")
+
+		return "", "", fmt.Errorf("%s: %w", op, ErrUserNotVerified)
+	}
+
 	log.Info("user logged in successfully")
 
 	accessToken, refreshToken, err := jwt.NewTokens(user.ID, app.ID, app.Secret, a.RefreshTokenTTL, a.AccessTokenTTL)
@@ -211,7 +218,7 @@ func (a *Auth) Logout(ctx context.Context, token string) error {
 	return nil
 }
 
-func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {
+func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, string, error) {
 	const op = "auth.RegisterNewUser"
 	log := a.log.With(slog.String("op", op))
 	log.Info("registering user")
@@ -222,21 +229,21 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		if errors.Is(err, storage.ErrAppNotFound) {
 			log.Warn("app not found", sl.Err(err))
 
-			return 0, storage.ErrAppNotFound
+			return 0, "", storage.ErrAppNotFound
 		}
 
 		log.Error("failed to get app", sl.Err(err))
-		return 0, fmt.Errorf("%s: %w", op, err)
+		return 0, "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	passHash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
+		return 0, "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	verificationCode, err := tokengenerator.GenerateToken() // Generate a verification code for email verification
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
+		return 0, "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationCode)
@@ -244,16 +251,16 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		if errors.Is(err, storage.ErrUserExists) {
 			log.Warn("user already exists", sl.Err(err))
 
-			return 0, ErrUserExists
+			return 0, "", ErrUserExists
 		}
 		log.Error("failed to save user", sl.Err(err))
 
-		return 0, fmt.Errorf("%s: %w", op, err)
+		return 0, "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("user registered")
 
-	return id, nil
+	return id, verificationCode, nil
 }
 
 func (a *Auth) DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error {

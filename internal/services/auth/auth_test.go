@@ -296,6 +296,7 @@ func TestAuthRegisterNewUser(t *testing.T) {
 		appID     int64
 		mockSetup func(s *MockStorage)
 		wantID    int64
+		wantVerificationCode string
 		wantErr   error
 	}{
 		{
@@ -340,7 +341,7 @@ func TestAuthRegisterNewUser(t *testing.T) {
 			authService, storageMock, _, _ := newTestAuth()
 			tt.mockSetup(storageMock)
 
-			id, err := authService.RegisterNewUser(context.Background(), tt.email, tt.username, tt.password, tt.appID)
+			id, _, err := authService.RegisterNewUser(context.Background(), tt.email, tt.username, tt.password, tt.appID)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)
@@ -350,6 +351,7 @@ func TestAuthRegisterNewUser(t *testing.T) {
 
 			require.NoError(t, err)
 			require.Equal(t, tt.wantID, id)
+			//require.Equal(t, tt.wantVerificationCode, verificationCode)
 			storageMock.AssertExpectations(t)
 		})
 	}

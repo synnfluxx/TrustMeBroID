@@ -20,6 +20,3 @@ http:
   rps: 3
   burst: 6
   visitor_cleaner_delay: 3h
-smtp:
-  host: 'smtp.mailtrap.io'
-  port: 587
