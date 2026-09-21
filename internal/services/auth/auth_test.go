@@ -26,9 +26,14 @@ type MockStorage struct {
 	mock.Mock
 }
 
-func (m *MockStorage) SaveUser(ctx context.Context, email, username string, passHash []byte, appID int64) (int64, error) {
-	args := m.Called(ctx, email, username, passHash, appID)
+func (m *MockStorage) SaveUser(ctx context.Context, email, username string, passHash []byte, appID int64, verificationCode string) (int64, error) {
+	args := m.Called(ctx, email, username, passHash, appID, verificationCode)
 	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *MockStorage) VerifyUser(ctx context.Context, email string, appID int64) error {
+	args := m.Called(ctx, email, appID)
+	return args.Error(0)
 }
 
 func (m *MockStorage) SaveOAuthUser(ctx context.Context, email, username string, appID int64) (models.User, error) {
@@ -108,6 +113,11 @@ func (m *MockStorage) RegisterApp(ctx context.Context, appName string, appSecret
 
 func (m *MockStorage) DeleteApp(ctx context.Context, appID int64) error {
 	args := m.Called(ctx, appID)
+	return args.Error(0)
+}
+
+func (m *MockStorage) UpdateVerificationToken(ctx context.Context, email string, appID int64, newToken string) error {
+	args := m.Called(ctx, email, appID, newToken)
 	return args.Error(0)
 }
 

@@ -38,6 +38,8 @@ type Auth interface {
 	UpdateRefreshToken(ctx context.Context, token string) (string, error)
 	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
 	Logout(ctx context.Context, token string) error
+	VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error
+	GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error)
 }
 
 type serverAPI struct {
@@ -343,6 +345,50 @@ func (s *serverAPI) RefreshAccessToken(ctx context.Context, req *ssov1.RefreshTo
 
 	return &ssov1.RefreshTokenResponse{
 		NewToken: token,
+	}, nil
+}
+
+func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailRequest) (*ssov1.Empty, error) {
+	if req.GetAppId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	
+	if req.GetEmail() == emptyString {
+		return nil, status.Error(codes.InvalidArgument, "email is required")
+	}
+
+	err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationToken(), req.GetAppId())
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+		}
+
+		return nil, status.Error(codes.Internal, "internal server error")
+	}
+
+	return &ssov1.Empty{}, nil
+}
+
+func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1.GenerateNewVerificationTokenRequest) (*ssov1.GenerateNewVerificationTokenResponse, error) {
+	if req.GetAppId() == emptyValue {
+		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	
+	if req.GetEmail() == emptyString {
+		return nil, status.Error(codes.InvalidArgument, "email is required")
+	}
+	
+	token, err := s.auth.GenerateNewVerificationToken(ctx, req.GetEmail(), req.GetAppId())
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "user not found")
+		}
+
+		return nil, status.Error(codes.Internal, "internal server error")
+	}
+
+	return &ssov1.GenerateNewVerificationTokenResponse{
+		VerificationToken: token,
 	}, nil
 }
 

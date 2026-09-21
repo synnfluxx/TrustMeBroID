@@ -17,6 +17,7 @@ import (
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/jwt"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
+	tokengenerator "github.com/synnfluxx/TrustMeBroID/internal/lib/tokenGenerator"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -45,7 +46,7 @@ type Auth struct {
 }
 
 type UserSaver interface {
-	SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (uid int64, err error)
+	SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64, verificationCode string) (uid int64, err error)
 	//SaveOAuthUser(ctx context.Context, email, username string, appID int64) (usr models.User, err error)
 }
 
@@ -57,6 +58,8 @@ type UserProvider interface {
 	DeleteUserByUserID(ctx context.Context, userID int64, appID int64) error
 	DeleteUserByUsername(ctx context.Context, username string, appID int64) error
 	DeleteUserByEmail(ctx context.Context, email string, appID int64) error
+	VerifyUser(ctx context.Context, email string, appID int64) error
+	UpdateVerificationToken(ctx context.Context, email string, appID int64, newToken string) error
 }
 
 type AdminProvider interface {
@@ -102,16 +105,16 @@ func (a *Auth) MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, e
 	const op = "auth.MakeAdmin"
 	log := a.log.With("op", op)
 	log.Info("attempting to make user admin")
-	
+
 	uid, err = a.adminProvider.MakeAdmin(ctx, userID, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
 			return 0, fmt.Errorf("%s: %w", op, ErrUserNotFound)
 		}
-		
+
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
-	
+
 	return uid, err
 }
 
@@ -200,7 +203,6 @@ func (a *Auth) Logout(ctx context.Context, token string) error {
 	log := a.log.With("op", op)
 	log.Info("attempting to logout user")
 
-	
 	if err := a.jwtProvider.Logout(ctx, token); err != nil {
 		log.Warn("error logout user", sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
@@ -232,7 +234,12 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
-	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID)
+	verificationCode, err := tokengenerator.GenerateToken() // Generate a verification code for email verification
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationCode)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserExists) {
 			log.Warn("user already exists", sl.Err(err))
@@ -479,6 +486,67 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 	}
 
 	return refreshToken, nil
+}
+
+func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
+	const op = "auth.VerifyUser"
+	log := a.log.With(slog.String("op", op))
+	log.Info("verifying user")
+
+	usr, err := a.usrProvider.UserByEmail(ctx, email, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			log.Warn("user not found", sl.Err(err))
+			return ErrUserNotFound
+		}
+
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if usr.VerificationCode != VerificationToken {
+		log.Warn("invalid verification token")
+		return fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+	}
+
+	err = a.usrProvider.VerifyUser(ctx, email, appID)
+	if err != nil {
+		log.Warn("error verifying user", sl.Err(err))
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("user verified successfully")
+	return nil
+}
+
+func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error) {
+	const op = "auth.GenerateNewVerificationToken"
+	log := a.log.With(slog.String("op", op))
+	log.Info("generating new verification token")
+
+	_, err := a.usrProvider.UserByEmail(ctx, email, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			log.Warn("user not found", sl.Err(err))
+			return "", ErrUserNotFound
+		}
+
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	newVerificationToken, err := tokengenerator.GenerateToken()
+	if err != nil {
+		log.Warn("error generating new verification token", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	err = a.usrProvider.UpdateVerificationToken(ctx, email, appID, newVerificationToken)
+	if err != nil {
+		log.Warn("error updating verification token", sl.Err(err))
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("new verification token generated successfully")
+	return newVerificationToken, nil
 }
 
 func tokenFingerprint(token string) string {

@@ -70,7 +70,7 @@ func (s *Storage) Reaper(ctx context.Context) ([]int64, error) {
 	return deletedUsers, nil
 }
 
-func (s *Storage) SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64) (int64, error) {
+func (s *Storage) SaveUser(ctx context.Context, email string, username string, passHash []byte, appID int64, verificationCode string) (int64, error) {
 	const op = "storage.postgres.SaveUser"
 
 	var id int64
@@ -82,12 +82,12 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 			  AND app_id = $4
 			  AND deleted_at IS NOT NULL
 		)
-		INSERT INTO users(email, username, pass_hash, app_id) 
-		VALUES($1, $2, $3, $4) 
+		INSERT INTO users(email, username, pass_hash, app_id, verification_code) 
+		VALUES($1, $2, $3, $4, $5) 
 		RETURNING id
 	`
 
-	err := s.db.QueryRowContext(ctx, query, email, username, passHash, appID).Scan(&id)
+	err := s.db.QueryRowContext(ctx, query, email, username, passHash, appID, verificationCode).Scan(&id)
 	if err != nil {
 		var pqErr *pq.Error
 
@@ -402,4 +402,44 @@ func (s *Storage) Usernames(ctx context.Context) ([]string, error) {
 	}
 
 	return usernames, nil
+}
+
+func (s *Storage) VerifyUser(ctx context.Context, email string, appID int64) error { //TODO: test this function
+	const op = "storage.postgres.VerifyUser"
+
+	res, err := s.db.ExecContext(ctx, "UPDATE users SET is_verified = TRUE WHERE email = $1 AND app_id = $2 AND is_verified = FALSE", email, appID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if affected == 0 {
+		return storage.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (s *Storage) UpdateVerificationToken(ctx context.Context, email string, appID int64, newToken string) error { //TODO: test this function
+	const op = "storage.postgres.UpdateVerificationToken"
+
+	res, err := s.db.ExecContext(ctx, "UPDATE users SET verification_code = $1 WHERE email = $2 AND app_id = $3", newToken, email, appID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if affected == 0 {
+		return storage.ErrUserNotFound
+	}
+
+	return nil
 }

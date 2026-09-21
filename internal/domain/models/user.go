@@ -10,4 +10,6 @@ type User struct {
 	Username  string
 	PassHash  []byte
 	DeletedAt sql.NullTime
+	IsVerified bool
+	VerificationCode string
 }

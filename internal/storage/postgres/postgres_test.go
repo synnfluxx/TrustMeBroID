@@ -106,7 +106,7 @@ func createTestApp(t *testing.T, storage *Storage, ctx context.Context) int64 {
 func createTestUser(t *testing.T, storage *Storage, ctx context.Context, appID int64) int64 {
 	t.Helper()
 
-	userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+	userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID, "test-verification-code")
 	require.NoError(t, err)
 
 	return userID
@@ -136,7 +136,7 @@ func TestStorage_SaveUser(t *testing.T) {
 		storage, ctx := newTestStorage(t)
 		appID := createTestApp(t, storage, ctx)
 
-		userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		userID, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID, "test-verification-code")
 		require.NoError(t, err)
 		assert.NotZero(t, userID)
 	})
@@ -145,10 +145,10 @@ func TestStorage_SaveUser(t *testing.T) {
 		storage, ctx := newTestStorage(t)
 		appID := createTestApp(t, storage, ctx)
 
-		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID, "test-verification-code")
 		require.NoError(t, err)
 
-		_, err = storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		_, err = storage.SaveUser(ctx, email, username, []byte(passHash), appID, "test-verification-code")
 		require.Error(t, err)
 		require.ErrorIs(t, err, strg.ErrUserExists)
 	})
@@ -156,7 +156,7 @@ func TestStorage_SaveUser(t *testing.T) {
 	t.Run("non-existing app", func(t *testing.T) {
 		storage, ctx := newTestStorage(t)
 
-		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337)
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337, "test-verification-code")
 		require.Error(t, err)
 		require.ErrorIs(t, err, strg.ErrAppNotFound)
 	})
@@ -295,7 +295,7 @@ func TestStorage_SaveAndFind(t *testing.T) {
 	storage, ctx := newTestStorage(t)
 
 	t.Run("save user in non-existing app", func(t *testing.T) {
-		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337)
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), 1337, "test-verification-code")
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, strg.ErrAppNotFound))
 	})
@@ -311,7 +311,7 @@ func TestStorage_SaveAndFind(t *testing.T) {
 	userID := createTestUser(t, storage, ctx, appID)
 
 	t.Run("duplicate save user", func(t *testing.T) {
-		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID)
+		_, err := storage.SaveUser(ctx, email, username, []byte(passHash), appID, "test-verification-code")
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, strg.ErrUserExists))
 	})

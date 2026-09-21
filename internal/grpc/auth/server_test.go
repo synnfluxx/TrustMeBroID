@@ -73,6 +73,16 @@ func (m *MockAuth) Logout(ctx context.Context, token string) error {
 	panic("implement me")
 } // DON'T TESTED
 
+func (m *MockAuth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
+	args := m.Called(ctx, email, VerificationToken, appID)
+	return args.Error(0)
+} // DON'T TESTED
+
+func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error) {
+	args := m.Called(ctx, email, appID)
+	return args.String(0), args.Error(1)
+} // DON'T TESTED
+
 func TestLogin(t *testing.T) {
 	tests := []struct {
 		name      string
