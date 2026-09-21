@@ -82,8 +82,8 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 			  AND app_id = $4
 			  AND deleted_at IS NOT NULL
 		)
-		INSERT INTO users(email, username, pass_hash, app_id, verification_code) 
-		VALUES($1, $2, $3, $4, $5) 
+		INSERT INTO users(email, username, pass_hash, app_id, verification_code, last_token_generated_time) 
+		VALUES($1, $2, $3, $4, $5, NOW()) 
 		RETURNING id
 	`
 
@@ -111,7 +111,7 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 	row := s.db.QueryRowContext(ctx, query, args...)
 
 	var user models.User
-	err := row.Scan(&user.ID, &user.Email, &user.Username, &user.PassHash, &user.DeletedAt)
+	err := row.Scan(&user.ID, &user.Email, &user.Username, &user.PassHash, &user.DeletedAt, &user.IsVerified, &user.VerificationCode, &user.LastTokenGeneratedTime)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, fmt.Errorf("%s: %w", op, storage.ErrUserNotFound)
@@ -129,7 +129,7 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 
 func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE id = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
+		"SELECT id, email, username, pass_hash, deleted_at, is_verified, verification_code, last_token_generated_time FROM users WHERE id = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		userID,
 		appID,
 	)
@@ -137,7 +137,7 @@ func (s *Storage) User(ctx context.Context, userID int64, appID int64) (models.U
 
 func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE email = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
+		"SELECT id, email, username, pass_hash, deleted_at, is_verified, verification_code, last_token_generated_time FROM users WHERE email = $1 AND app_id = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		email,
 		appID,
 	)
@@ -145,7 +145,7 @@ func (s *Storage) UserByEmail(ctx context.Context, email string, appID int64) (m
 
 func (s *Storage) UserByUsername(ctx context.Context, username string, appID int64) (models.User, error) {
 	return s.getUser(ctx,
-		"SELECT id, email, username, pass_hash, deleted_at FROM users WHERE app_id = $1 AND username = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
+		"SELECT id, email, username, pass_hash, deleted_at, is_verified, verification_code, last_token_generated_time	 FROM users WHERE app_id = $1 AND username = $2 ORDER BY deleted_at IS NULL DESC, id DESC LIMIT 1",
 		appID,
 		username,
 	)
@@ -407,7 +407,7 @@ func (s *Storage) Usernames(ctx context.Context) ([]string, error) {
 func (s *Storage) VerifyUser(ctx context.Context, email string, appID int64) error { //TODO: test this function
 	const op = "storage.postgres.VerifyUser"
 
-	res, err := s.db.ExecContext(ctx, "UPDATE users SET is_verified = TRUE WHERE email = $1 AND app_id = $2 AND is_verified = FALSE", email, appID)
+	res, err := s.db.ExecContext(ctx, "UPDATE users SET is_verified = TRUE, last_token_generated_time = NOW() WHERE email = $1 AND app_id = $2 AND is_verified = FALSE", email, appID)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}

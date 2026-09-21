@@ -12,4 +12,5 @@ type User struct {
 	DeletedAt sql.NullTime
 	IsVerified bool
 	VerificationCode string
+	LastTokenGeneratedTime sql.NullTime
 }

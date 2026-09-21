@@ -30,6 +30,7 @@ var (
 	ErrUserNotFound      = errors.New("user not found")
 	ErrInvalidIdentifier = errors.New("invalid identifier")
 	ErrUserNotVerified   = errors.New("user not verified")
+	ErrVerificationTokenExpired = errors.New("verification token expired")
 )
 
 type Auth struct {
@@ -508,6 +509,11 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 		}
 
 		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	if usr.LastTokenGeneratedTime.Valid && time.Since(usr.LastTokenGeneratedTime.Time) > 72*time.Hour {
+		log.Warn("verification token expired")
+		return fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
 	}
 
 	if usr.VerificationCode != VerificationToken {
