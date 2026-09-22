@@ -25,9 +25,9 @@ func (m *MockAuth) Login(ctx context.Context, identifier models.UserIdentifier, 
 	return args.String(0), args.String(1), args.Error(2)
 }
 
-func (m *MockAuth) RegisterNewUser(ctx context.Context, email, username, password string, appID int64) (int64, string, error) {
+func (m *MockAuth) RegisterNewUser(ctx context.Context, email, username, password string, appID int64) (int64, error) {
 	args := m.Called(ctx, email, username, password, appID)
-	return int64(args.Int(0)), args.String(1), args.Error(2)
+	return int64(args.Int(0)), args.Error(2)
 }
 
 func (m *MockAuth) RefreshToken(ctx context.Context, token string) (string, error) {
@@ -78,9 +78,9 @@ func (m *MockAuth) VerifyUserEmail(ctx context.Context, email string, Verificati
 	return args.Error(0)
 } // DON'T TESTED
 
-func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error) {
+func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (error) {
 	args := m.Called(ctx, email, appID)
-	return args.String(0), args.Error(1)
+	return args.Error(0)
 } // DON'T TESTED
 
 func TestLogin(t *testing.T) {

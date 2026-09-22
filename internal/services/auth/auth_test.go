@@ -169,6 +169,7 @@ func newTestAuth() (*Auth, *MockStorage, *MockJWTProvider, *MockPasswordVerifier
 		pwMock,
 		testAccessTTL,
 		testRefreshTTL,
+		_, // EmailService is not needed for most tests, can be mocked if necessary
 	)
 
 	return authService, storageMock, jwtMock, pwMock
@@ -341,7 +342,7 @@ func TestAuthRegisterNewUser(t *testing.T) {
 			authService, storageMock, _, _ := newTestAuth()
 			tt.mockSetup(storageMock)
 
-			id, _, err := authService.RegisterNewUser(context.Background(), tt.email, tt.username, tt.password, tt.appID)
+			id, err := authService.RegisterNewUser(context.Background(), tt.email, tt.username, tt.password, tt.appID)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)

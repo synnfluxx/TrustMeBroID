@@ -25,11 +25,11 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	//ErrInvalidAppID       = errors.New("invalid app id")
-	ErrUserExists        = errors.New("user already exists")
-	ErrAppExists         = errors.New("app already exists")
-	ErrUserNotFound      = errors.New("user not found")
-	ErrInvalidIdentifier = errors.New("invalid identifier")
-	ErrUserNotVerified   = errors.New("user not verified")
+	ErrUserExists               = errors.New("user already exists")
+	ErrAppExists                = errors.New("app already exists")
+	ErrUserNotFound             = errors.New("user not found")
+	ErrInvalidIdentifier        = errors.New("invalid identifier")
+	ErrUserNotVerified          = errors.New("user not verified")
 	ErrVerificationTokenExpired = errors.New("verification token expired")
 )
 
@@ -44,7 +44,12 @@ type Auth struct {
 	pwVerifier      PasswordVerifier
 	RefreshTokenTTL time.Duration
 	AccessTokenTTL  time.Duration
+	EmailService    EmailService
 	appSecrets      sync.Map
+}
+
+type EmailService interface {
+	SendVerificationEmail(email, verificationToken string, URL string) error
 }
 
 type UserSaver interface {
@@ -88,7 +93,7 @@ type PasswordVerifier interface {
 	Compare(hash []byte, pw []byte) error // For tests	// maybe boilerplate a little bit
 }
 
-func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appProvider AppProvider, adminProvider AdminProvider, jwtProvider JWTProvider, passwordVerifier PasswordVerifier, accessTokenTTL, refreshTokenTTL time.Duration) *Auth {
+func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appProvider AppProvider, adminProvider AdminProvider, jwtProvider JWTProvider, passwordVerifier PasswordVerifier, accessTokenTTL, refreshTokenTTL time.Duration, emailService EmailService) *Auth {
 	return &Auth{
 		log:             log,
 		jwtProvider:     jwtProvider,
@@ -99,6 +104,7 @@ func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appPr
 		pwVerifier:      passwordVerifier,
 		AccessTokenTTL:  accessTokenTTL,
 		RefreshTokenTTL: refreshTokenTTL,
+		EmailService:    emailService,
 		appSecrets:      sync.Map{},
 	}
 }
@@ -219,7 +225,7 @@ func (a *Auth) Logout(ctx context.Context, token string) error {
 	return nil
 }
 
-func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, string, error) {
+func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {
 	const op = "auth.RegisterNewUser"
 	log := a.log.With(slog.String("op", op))
 	log.Info("registering user")
@@ -230,21 +236,21 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		if errors.Is(err, storage.ErrAppNotFound) {
 			log.Warn("app not found", sl.Err(err))
 
-			return 0, "", storage.ErrAppNotFound
+			return 0, storage.ErrAppNotFound
 		}
 
 		log.Error("failed to get app", sl.Err(err))
-		return 0, "", fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
 	passHash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
 	if err != nil {
-		return 0, "", fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
 	verificationCode, err := tokengenerator.GenerateToken() // Generate a verification code for email verification
 	if err != nil {
-		return 0, "", fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
 	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationCode)
@@ -252,16 +258,16 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		if errors.Is(err, storage.ErrUserExists) {
 			log.Warn("user already exists", sl.Err(err))
 
-			return 0, "", ErrUserExists
+			return 0, ErrUserExists
 		}
 		log.Error("failed to save user", sl.Err(err))
 
-		return 0, "", fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("user registered")
 
-	return id, verificationCode, nil
+	return id, nil
 }
 
 func (a *Auth) DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
@@ -531,7 +537,7 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 	return nil
 }
 
-func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error) {
+func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {
 	const op = "auth.GenerateNewVerificationToken"
 	log := a.log.With(slog.String("op", op))
 	log.Info("generating new verification token")
@@ -540,26 +546,42 @@ func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, a
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
 			log.Warn("user not found", sl.Err(err))
-			return "", ErrUserNotFound
+			return ErrUserNotFound
 		}
 
-		return "", fmt.Errorf("%s: %w", op, err)
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	app, err := a.appProvider.App(ctx, appID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAppNotFound) {
+			log.Warn("app not found", sl.Err(err))
+			return storage.ErrAppNotFound
+		}
+
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	newVerificationToken, err := tokengenerator.GenerateToken()
 	if err != nil {
 		log.Warn("error generating new verification token", sl.Err(err))
-		return "", fmt.Errorf("%s: %w", op, err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	err = a.usrProvider.UpdateVerificationToken(ctx, email, appID, newVerificationToken)
 	if err != nil {
 		log.Warn("error updating verification token", sl.Err(err))
-		return "", fmt.Errorf("%s: %w", op, err)
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	err = a.EmailService.SendVerificationEmail(email, newVerificationToken, app.RedirectURI)
+	if err != nil {
+		log.Warn("error sending verification email", sl.Err(err))
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("new verification token generated successfully")
-	return newVerificationToken, nil
+	return nil
 }
 
 func tokenFingerprint(token string) string {

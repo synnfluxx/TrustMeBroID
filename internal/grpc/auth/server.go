@@ -28,7 +28,7 @@ var PassErr = errors.New("password must be at least 8 characters long and includ
 
 type Auth interface {
 	Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (accessToken, refreshToken string, err error)
-	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, verificationCode string, err error)
+	RegisterNewUser(ctx context.Context, email string, username string, password string, appID int64) (userID int64, err error)
 	IsAdmin(ctx context.Context, userID int64, appID int64) (bool, error)
 	RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error)
 	DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error
@@ -39,7 +39,7 @@ type Auth interface {
 	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
 	Logout(ctx context.Context, token string) error
 	VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error
-	GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (string, error)
+	GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error
 }
 
 type serverAPI struct {
@@ -142,7 +142,7 @@ func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
 
-	userID, verificationCode, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetUsername(), req.GetPassword(), req.GetAppId())
+	userID, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetUsername(), req.GetPassword(), req.GetAppId())
 	if err != nil {
 		if errors.Is(err, auth.ErrUserExists) {
 			return nil, status.Error(codes.AlreadyExists, "user already exists")
@@ -153,7 +153,6 @@ func (s *serverAPI) Register(ctx context.Context, req *ssov1.RegisterRequest) (*
 
 	return &ssov1.RegisterResponse{
 		UserId: userID,
-		VerificationToken: verificationCode,
 	}, nil
 }
 
@@ -370,7 +369,7 @@ func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailR
 	return &ssov1.Empty{}, nil
 }
 
-func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1.GenerateNewVerificationTokenRequest) (*ssov1.GenerateNewVerificationTokenResponse, error) {
+func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1.GenerateNewVerificationTokenRequest) (*ssov1.Empty, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
@@ -379,7 +378,7 @@ func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1
 		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
 	
-	token, err := s.auth.GenerateNewVerificationToken(ctx, req.GetEmail(), req.GetAppId())
+	err := s.auth.GenerateNewVerificationToken(ctx, req.GetEmail(), req.GetAppId())
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
 			return nil, status.Error(codes.InvalidArgument, "user not found")
@@ -388,9 +387,7 @@ func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1
 		return nil, status.Error(codes.Internal, "internal server error")
 	}
 
-	return &ssov1.GenerateNewVerificationTokenResponse{
-		VerificationToken: token,
-	}, nil
+	return &ssov1.Empty{}, nil
 }
 
 func validate(email, password string) error {

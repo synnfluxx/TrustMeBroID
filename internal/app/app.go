@@ -11,6 +11,7 @@ import (
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/email"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage/postgres"
 	redisStorage "github.com/synnfluxx/TrustMeBroID/internal/storage/redis"
 )
@@ -20,7 +21,7 @@ type App struct {
 	HTTPSrv *httpApp.App
 }
 
-func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost, redisConnStr string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration) *App {
+func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int, storagePath string, redisPort, redisRetries int, redisHost, redisConnStr string, redisTimeout, accessTokenTTL, refreshTokenTTL, reaperDelay, visitorCleanerDelay time.Duration, emailService *email.EmailService) *App {
 	storage, err := postgres.New(storagePath)
 	if err != nil {
 		panic(err)
@@ -52,7 +53,7 @@ func New(log *slog.Logger, grpcPort, grpcRPS, grpcBurst, httpRPS, httpBurst int,
 	}(ctx)
 
 	ph := encryptor.NewPasswordHasher()
-	authService := auth.New(log, storage, storage, storage, storage, redis, ph, accessTokenTTL, refreshTokenTTL)
+	authService := auth.New(log, storage, storage, storage, storage, redis, ph, accessTokenTTL, refreshTokenTTL, emailService)
 
 	return &App{
 		GRPCSrv: grpcApp.New(log, authService, grpcPort, cancel, grpcRPS, grpcBurst),

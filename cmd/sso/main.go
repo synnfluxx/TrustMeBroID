@@ -12,6 +12,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/synnfluxx/TrustMeBroID/internal/app"
 	"github.com/synnfluxx/TrustMeBroID/internal/config"
+	"github.com/synnfluxx/TrustMeBroID/internal/services/email"
 	"github.com/synnfluxx/TrustMeBroID/migrations"
 )
 
@@ -39,7 +40,8 @@ func main() {
 
 	log.Info("starting sso server")
 
-	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.ConnectionString, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay)
+	emailService := email.NewEmailService(log, &cfg.SMTP)
+	application := app.New(log, cfg.GRPC.Port, cfg.GRPC.Rps, cfg.GRPC.Burst, cfg.HTTP.Rps, cfg.HTTP.Burst, cfg.DB.ConnectionString, cfg.Redis.Port, cfg.Redis.Retries, cfg.Redis.Host, cfg.Redis.ConnectionString, cfg.Redis.Timeout, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.DB.ReaperDelay, cfg.HTTP.CleanerDelay, emailService)
 
 	go application.GRPCSrv.MustRun()
 	go application.HTTPSrv.MustRun()

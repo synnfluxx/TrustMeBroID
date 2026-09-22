@@ -17,6 +17,7 @@ type Config struct {
 	DB              PostgresConfig `yaml:"postgres" env-required:"true"`
 	Redis           RedisConfig    `yaml:"redis" env-required:"true"`
 	HTTP            HTTPConfig     `yaml:"http" env-required:"true"`
+	SMTP            SMTPConfig     `yaml:"smtp" env-required:"true"`
 }
 
 type GRPCConfig struct {
@@ -46,6 +47,13 @@ type RedisConfig struct {
 	Host             string        `yaml:"host"`
 	Timeout          time.Duration `yaml:"timeout"`
 	Retries          int           `yaml:"retires"`
+}
+
+type SMTPConfig struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	Username string `yaml:"-" env:"SMTP_USERNAME" env-required:"true"`
+	Password string `yaml:"-" env:"SMTP_PASSWORD" env-required:"true"`
 }
 
 func (c *PostgresConfig) mustSetConnectionString() {
