@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/smtp"
+	"strconv"
+	"strings"
 	"text/template"
+	"time"
 
 	"github.com/synnfluxx/TrustMeBroID/internal/config"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
 )
 
@@ -80,6 +85,35 @@ func NewEmailService(log *slog.Logger, smtpConfig *config.SMTPConfig) *EmailServ
 }
 
 func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) error {
+	const op = "email.SendVerificationEmail"
+	start := time.Now()
+
+	addr := net.JoinHostPort(e.SMTPConfig.Host, strconv.Itoa(e.SMTPConfig.Port))
+	log := e.Log.With(
+		slog.String(logger.KeyOp, op),
+		sl.Email(to),
+		slog.String("smtp_addr", addr),
+		sl.Email2("smtp_from", e.SMTPConfig.Username),
+	)
+
+	// Config problems here surface from net/smtp as a bare "dial tcp :0:
+	// connect: connection refused", which does not say that the cause is an
+	// empty config block. Name it up front instead.
+	if e.SMTPConfig.Host == "" || e.SMTPConfig.Port == 0 {
+		err := fmt.Errorf("smtp is not configured: host=%q port=%d", e.SMTPConfig.Host, e.SMTPConfig.Port)
+		log.Error("cannot send verification email: smtp is not configured",
+			slog.String("remedy", "set smtp.host and smtp.port in the service config"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
+		return err
+	}
+	if URL == "" {
+		// An empty base makes the link relative, so it is unclickable in every
+		// mail client. Silent until a user complains; loud here.
+		log.Error("verification link has an empty base url",
+			slog.String("impact", "the link in the email will be relative and unusable"),
+			slog.String("remedy", "check the redirect_uri registered for this application"))
+	}
+
 	url := fmt.Sprintf("%s/auth/verify?token=%s&email=%s", URL, verificationToken, to)
 
 	data := EmailData{
@@ -89,13 +123,15 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 
 	tmpl, err := template.New("emailTemplate").Parse(emailTemplate)
 	if err != nil {
-		e.Log.Error("failed to parse email template", sl.Err(err))
+		log.Error("cannot send verification email: template does not parse",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return err
 	}
 
 	var body bytes.Buffer
 	if err := tmpl.Execute(&body, data); err != nil {
-		e.Log.Error("failed to execute email template", sl.Err(err))
+		log.Error("cannot send verification email: template does not render",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return err
 	}
 
@@ -113,14 +149,51 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 	msg.WriteString("\r\n")
 	msg.Write(body.Bytes())
 
+	log.Debug("sending verification email",
+		sl.Token("verification", verificationToken),
+		slog.String("link_base", URL),
+		slog.Int("message_bytes", msg.Len()))
+
 	auth := smtp.PlainAuth("", e.SMTPConfig.Username, e.SMTPConfig.Password, e.SMTPConfig.Host)
 
-	err = smtp.SendMail(fmt.Sprintf("%s:%d", e.SMTPConfig.Host, e.SMTPConfig.Port), auth, e.SMTPConfig.Username, []string{to}, msg.Bytes())
-	if err != nil {
-		e.Log.Error("failed to send email", sl.Err(err))
+	if err := smtp.SendMail(addr, auth, e.SMTPConfig.Username, []string{to}, msg.Bytes()); err != nil {
+		// net/smtp errors are terse and the usual causes are configuration,
+		// not code. Attaching the likely cause turns a five-minute guess into
+		// a one-line read.
+		log.Error("verification email was not delivered to the smtp server",
+			slog.String("likely_cause", smtpFailureHint(e.SMTPConfig.Port, err)),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
 		return err
 	}
 
-	e.Log.Info("verification email sent successfully", "to", to)
+	// Handover to the relay only. Whether the mailbox accepted it is not
+	// observable from here, and the message must not imply otherwise.
+	log.Info("verification email handed to the smtp server",
+		sl.Token("verification", verificationToken),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 	return nil
+}
+
+// smtpFailureHint maps the common net/smtp failures onto their usual cause.
+func smtpFailureHint(port int, err error) string {
+	text := strings.ToLower(err.Error())
+
+	switch {
+	case strings.Contains(text, "unencrypted connection"):
+		return "the server did not offer STARTTLS; net/smtp refuses to send a password in the clear"
+	case port == 465:
+		return "port 465 expects implicit TLS, which net/smtp does not speak; use 587 with STARTTLS"
+	case strings.Contains(text, "authentication failed"), strings.Contains(text, "535"):
+		return "SMTP_USERNAME or SMTP_PASSWORD rejected by the server"
+	case strings.Contains(text, "no such host"):
+		return "smtp.host does not resolve from inside the container"
+	case strings.Contains(text, "connection refused"), strings.Contains(text, "i/o timeout"):
+		return "smtp host or port unreachable from this network"
+	case strings.Contains(text, "550"), strings.Contains(text, "553"):
+		return "the relay rejected the sender or the recipient address"
+	default:
+		return "unclassified smtp failure"
+	}
 }

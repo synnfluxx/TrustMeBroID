@@ -3,6 +3,7 @@ module github.com/synnfluxx/TrustMeBroID
 go 1.25.7
 
 require (
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/brianvoe/gofakeit/v7 v7.14.0
 	github.com/dusted-go/logging/v2 v2.0.0-rc-05
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0
@@ -18,6 +19,7 @@ require (
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	gitlab.com/synnfluxx/protos v0.0.0-20260922081407-ac5ae29cfc88
 	golang.org/x/crypto v0.50.0
@@ -73,9 +75,9 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect

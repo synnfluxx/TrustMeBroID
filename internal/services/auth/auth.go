@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/jwt"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
 	tokengenerator "github.com/synnfluxx/TrustMeBroID/internal/lib/tokenGenerator"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
@@ -111,168 +111,290 @@ func New(log *slog.Logger, userSaver UserSaver, userProvider UserProvider, appPr
 
 func (a *Auth) MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, err error) {
 	const op = "auth.MakeAdmin"
-	log := a.log.With("op", op)
-	log.Info("attempting to make user admin")
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyUserID, userID),
+		slog.Int64(logger.KeyAppID, appID),
+	)
+
+	// Privilege grants are audit events: they are rare, they are irreversible
+	// from the user's side, and someone will eventually need to answer "who
+	// made this account an admin, and when".
+	log.Info("granting admin privileges")
 
 	uid, err = a.adminProvider.MakeAdmin(ctx, userID, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
+			log.Warn("admin grant rejected: user does not exist",
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected), sl.Err(err))
 			return 0, fmt.Errorf("%s: %w", op, ErrUserNotFound)
 		}
 
+		log.Error("admin grant failed",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
+
+	log.Info("admin privileges granted",
+		slog.Int64("admin_row_id", uid),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess))
 
 	return uid, err
 }
 
 func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (string, string, error) {
 	const op = "auth.Login"
-	log := a.log.With("op", op)
-	log.Info("attempting to login user")
+	start := time.Now()
 
-	var user models.User
-	var err error
-	switch {
-	case identifier.Username != nil:
-		user, err = a.usrProvider.UserByUsername(ctx, *identifier.Username, appID)
-		if err != nil {
-			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
-				log.Warn("user not found", sl.Err(err))
+	// identifier_type tells us which login form users actually use, and keeps
+	// the three lookup branches distinguishable in the log without printing the
+	// identifier itself at every step.
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		slog.String("identifier_type", identifierType(identifier)),
+	)
+	log.Debug("login attempt received")
 
-				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
-			}
-
-			log.Error("failed to get user", sl.Err(err))
-
-			return "", "", fmt.Errorf("%s: %w", op, err)
-		}
-	case identifier.Email != nil:
-		user, err = a.usrProvider.UserByEmail(ctx, *identifier.Email, appID)
-		if err != nil {
-			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
-				log.Warn("user not found", sl.Err(err))
-
-				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
-			}
-
-			log.Error("failed to get user", sl.Err(err))
-
-			return "", "", fmt.Errorf("%s: %w", op, err)
-		}
-	case identifier.ID != nil:
-		user, err = a.usrProvider.User(ctx, *identifier.ID, appID)
-		if err != nil {
-			if errors.Is(err, storage.ErrUserNotFound) || errors.Is(err, storage.ErrUserDeleted) {
-				log.Warn("user not found", sl.Err(err))
-
-				return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
-			}
-
-			log.Error("failed to get user", sl.Err(err))
-
-			return "", "", fmt.Errorf("%s: %w", op, err)
-		}
-	default:
-		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidIdentifier)
+	user, err := a.lookupUser(ctx, log, identifier, appID)
+	if err != nil {
+		return "", "", err
 	}
 
-	if err := a.pwVerifier.Compare(user.PassHash, []byte(password)); err != nil {
-		log.Info("invalid credentials", sl.Err(err))
+	log = log.With(slog.Int64(logger.KeyUserID, user.ID))
 
+	if err := a.pwVerifier.Compare(user.PassHash, []byte(password)); err != nil {
+		// A wrong password is an ordinary event, not an operational fault, so
+		// it stays at warn and never pages anyone. It is logged at all because
+		// a burst of these from one peer is how credential stuffing looks.
+		log.Warn("login rejected: password mismatch",
+			slog.String("reason", "bad_password"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
+			sl.Since(start))
 		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+	}
+
+	if !user.IsVerified {
+		// Distinct from a bad password: this user knows their credentials and
+		// is blocked by the verification flow. If this reason dominates the
+		// rejections, email delivery is broken, not the users.
+		log.Warn("login rejected: email not verified",
+			slog.String("reason", "email_not_verified"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
+			sl.Since(start))
+		return "", "", fmt.Errorf("%s: %w", op, ErrUserNotVerified)
 	}
 
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
+		log.Error("login failed: cannot load application secret",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
 		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	if !user.IsVerified {
-		log.Warn("user email not verified")
-
-		return "", "", fmt.Errorf("%s: %w", op, ErrUserNotVerified)
-	}
-
-	log.Info("user logged in successfully")
-
 	accessToken, refreshToken, err := jwt.NewTokens(user.ID, app.ID, app.Secret, a.RefreshTokenTTL, a.AccessTokenTTL)
 	if err != nil {
-		log.Error("failed to generate token", sl.Err(err))
-
+		log.Error("login failed: cannot sign tokens",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
 		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	if err := a.jwtProvider.SaveRefreshToken(ctx, refreshToken, user.ID, app.ID, a.RefreshTokenTTL); err != nil {
-		log.Error("failed to save refresh token", sl.Err(err))
-
+		// The tokens exist but the refresh token was never persisted, so the
+		// session dies at the first refresh. Saying so here saves debugging a
+		// "users are randomly logged out" report later.
+		log.Error("login failed: refresh token not persisted",
+			slog.String("impact", "the session would end at the first refresh"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
 		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
+
+	log.Info("login succeeded",
+		sl.Token("refresh", refreshToken),
+		slog.Duration("access_ttl", a.AccessTokenTTL),
+		slog.Duration("refresh_ttl", a.RefreshTokenTTL),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 
 	return accessToken, refreshToken, nil
 }
 
+// lookupUser resolves whichever identifier the caller supplied. The three
+// branches were previously copy-pasted with identical error handling; folding
+// them together means a lookup failure is reported one way instead of three.
+func (a *Auth) lookupUser(ctx context.Context, log *slog.Logger, identifier models.UserIdentifier, appID int64) (models.User, error) {
+	const op = "auth.Login"
+
+	var (
+		user models.User
+		err  error
+	)
+
+	switch {
+	case identifier.Username != nil:
+		user, err = a.usrProvider.UserByUsername(ctx, *identifier.Username, appID)
+	case identifier.Email != nil:
+		user, err = a.usrProvider.UserByEmail(ctx, *identifier.Email, appID)
+	case identifier.ID != nil:
+		user, err = a.usrProvider.User(ctx, *identifier.ID, appID)
+	default:
+		log.Warn("login rejected: no identifier supplied",
+			slog.String("reason", "missing_identifier"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected))
+		return models.User{}, fmt.Errorf("%s: %w", op, ErrInvalidIdentifier)
+	}
+
+	if err == nil {
+		return user, nil
+	}
+
+	switch {
+	case errors.Is(err, storage.ErrUserNotFound):
+		log.Warn("login rejected: no such account",
+			slog.String("reason", "user_not_found"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected))
+		return models.User{}, fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+
+	case errors.Is(err, storage.ErrUserDeleted):
+		// Same response to the caller as "not found", but a different cause:
+		// worth separating so support can tell a deleted account from a typo.
+		log.Warn("login rejected: account is soft-deleted",
+			slog.String("reason", "user_deleted"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected))
+		return models.User{}, fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+
+	default:
+		log.Error("login failed: user lookup error",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
+		return models.User{}, fmt.Errorf("%s: %w", op, err)
+	}
+}
+
+// identifierType names the branch taken, without revealing the value.
+func identifierType(identifier models.UserIdentifier) string {
+	switch {
+	case identifier.Username != nil:
+		return "username"
+	case identifier.Email != nil:
+		return "email"
+	case identifier.ID != nil:
+		return "user_id"
+	default:
+		return "none"
+	}
+}
+
 func (a *Auth) Logout(ctx context.Context, token string) error {
 	const op = "auth.Logout"
-	log := a.log.With("op", op)
-	log.Info("attempting to logout user")
+	log := logger.Op(ctx, a.log, op).With(sl.Token("refresh", token))
 
 	if err := a.jwtProvider.Logout(ctx, token); err != nil {
-		log.Warn("error logout user", sl.Err(err))
+		log.Error("logout failed: refresh token could not be revoked",
+			slog.String("impact", "the token stays valid until it expires"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
+
+	log.Info("refresh token revoked",
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess))
 
 	return nil
 }
 
 func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string, appID int64) (int64, error) {
 	const op = "auth.RegisterNewUser"
-	log := a.log.With(slog.String("op", op))
-	log.Info("registering user")
-	log.Debug("Credentials", slog.String("password", pass), slog.String("email", email), slog.String("username", username), slog.Int64("appID", appID)) //TODO: Remove this line after testing
+	start := time.Now()
 
-	_, err := a.appProvider.App(ctx, appID)
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		sl.Email(email),
+		sl.Username(username),
+	)
+	// The removed line here logged the plaintext password, the address and the
+	// username at debug level. Debug is the default level outside production,
+	// so every developer's terminal and every dev container's log collector
+	// received real credentials. Nothing in this function logs `pass`.
+	log.Info("registering user")
+
+	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
-			log.Warn("app not found", sl.Err(err))
-
+			log.Warn("registration rejected: unknown application",
+				slog.String("reason", "app_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected), sl.Err(err))
 			return 0, storage.ErrAppNotFound
 		}
 
-		log.Error("failed to get app", sl.Err(err))
+		log.Error("registration failed: cannot load application",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
+	hashStart := time.Now()
 	passHash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
 	if err != nil {
+		log.Error("registration failed: cannot hash password",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
+	// bcrypt is the slowest step in registration by an order of magnitude.
+	// Tracking it separately keeps a slow registration from being blamed on
+	// the database.
+	log.Debug("password hashed",
+		slog.Int("bcrypt_cost", bcrypt.DefaultCost), sl.Dur(time.Since(hashStart)))
 
-	verificationCode, err := tokengenerator.GenerateToken() // Generate a verification code for email verification
+	verificationToken, err := tokengenerator.GenerateToken()
 	if err != nil {
+		log.Error("registration failed: cannot generate verification token",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
-	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationCode)
+	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationToken)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserExists) {
-			log.Warn("user already exists", sl.Err(err))
-
+			log.Warn("registration rejected: account already exists",
+				slog.String("reason", "user_exists"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected), sl.Err(err))
 			return 0, ErrUserExists
 		}
-		log.Error("failed to save user", sl.Err(err))
+		log.Error("registration failed: cannot save user",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
-	log.Info("user registered")
+	log = log.With(slog.Int64(logger.KeyUserID, id))
+	log.Info("user row created, sending verification email",
+		sl.Token("verification", verificationToken))
+
+	if err := a.EmailService.SendVerificationEmail(email, verificationToken, app.RedirectURI); err != nil {
+		// The account exists but the user was never told how to activate it,
+		// and the caller will see a failed registration. Both halves of that
+		// state are recorded so the account can be found and the mail resent.
+		log.Error("registration incomplete: verification email was not sent",
+			slog.Int64("orphaned_user_id", id),
+			slog.String("impact", "account exists but cannot be verified or logged into"),
+			slog.String("remedy", "resend verification for this address"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("user registered",
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 
 	return id, nil
 }
 
 func (a *Auth) DeleteUser(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
 	const op = "auth.DeleteUser"
-	log := a.log.With(slog.String("op", op))
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		slog.String("identifier_type", identifierType(identifier)),
+	)
 	log.Info("deleting user")
 
 	switch {
@@ -315,24 +437,40 @@ func (a *Auth) DeleteUser(ctx context.Context, identifier models.UserIdentifier,
 
 func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
 	const op = "auth.RefreshToken"
-	log := a.log.With(slog.String("op", op))
-	log.Info("trying to refresh. token", "refreshToken", fmt.Sprintf("***%s", tokenFingerprint(token)))
+	start := time.Now()
+	log := logger.Op(ctx, a.log, op).With(sl.Token("refresh", token))
 
 	data, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
 	if err != nil {
 		if errors.Is(err, storage.ErrTokenNotFound) {
+			// Expected whenever a token has expired, been rotated or been
+			// revoked. It is the normal end of a session, so it is a warn and
+			// not an error, but it is recorded: a spike here means sessions
+			// are dying earlier than the configured TTL.
+			log.Warn("refresh rejected: token not found in store",
+				slog.String("reason", "token_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
 			return "", storage.ErrTokenNotFound
 		}
 
+		log.Error("refresh failed: token store unreachable",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", err
 	}
 
+	log = log.With(
+		slog.Int64(logger.KeyUserID, data.UserID),
+		slog.Int64(logger.KeyAppID, data.AppId),
+	)
+
 	secret, ok := a.appSecrets.Load(data.AppId)
 	if !ok {
-		log.Info("App secret Is not cached")
+		log.Debug("app secret not cached, loading from storage")
 
 		app, err := a.appProvider.App(ctx, data.AppId)
 		if err != nil {
+			log.Error("refresh failed: cannot load application secret",
+				slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 			return "", err
 		}
 
@@ -342,8 +480,17 @@ func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
 
 	newToken, err := jwt.NewAccessToken(data.UserID, data.AppId, a.AccessTokenTTL, secret.(string))
 	if err != nil {
+		log.Error("refresh failed: cannot sign access token",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", err
 	}
+
+	// Refresh runs on every client every few minutes, so the success path stays
+	// at debug: the gRPC access log already records that the call happened.
+	log.Debug("access token reissued",
+		slog.Duration("access_ttl", a.AccessTokenTTL),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 
 	return newToken, nil
 }
@@ -351,7 +498,10 @@ func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
 func (a *Auth) IsAdmin(ctx context.Context, UserID int64, appID int64) (bool, error) {
 	const op = "auth.IsAdmin"
 
-	log := a.log.With(slog.String("op", op))
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyUserID, UserID),
+		slog.Int64(logger.KeyAppID, appID),
+	)
 
 	isAdmin, err := a.usrProvider.IsAdmin(ctx, UserID, appID)
 	if err != nil {
@@ -375,8 +525,12 @@ func (a *Auth) IsAdmin(ctx context.Context, UserID int64, appID int64) (bool, er
 
 func (a *Auth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
 	const op = "auth.DeleteAdmin"
-	log := a.log.With(slog.String("op", op))
-	log.Info("deleting admin")
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		slog.String("identifier_type", identifierType(identifier)),
+	)
+	// Revoking admin rights is an audit event for the same reason granting them is.
+	log.Info("revoking admin privileges")
 
 	switch {
 	case identifier.ID != nil:
@@ -415,41 +569,65 @@ func (a *Auth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier
 
 func (a *Auth) RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error) {
 	const op = "auth.RegisterApp"
-	log := a.log.With(slog.String("op", op))
-	log.Info("registering app")
+	// Registering an application mints a signing key for a whole tenant. It is
+	// an administrative, audit-worthy event, so it is logged in full — minus
+	// the secret, which is what the whole thing protects.
+	log := logger.Op(ctx, a.log, op).With(
+		slog.String("app_name", appName),
+		slog.String("redirect_uri", redirectURI),
+	)
+	log.Info("registering application")
 
 	secretKey := make([]byte, 16)
-	_, err = io.ReadFull(rand.Reader, secretKey)
-	if err != nil {
+	if _, err = io.ReadFull(rand.Reader, secretKey); err != nil {
+		log.Error("app registration failed: no entropy for the app secret",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, "", err
 	}
+	plainSecret := hex.EncodeToString(secretKey)
 
-	encrypted, err := encryptor.EncryptString([]byte(os.Getenv("MASTER_KEY")), []byte(hex.EncodeToString(secretKey)))
+	masterKey := []byte(os.Getenv("MASTER_KEY"))
+	encrypted, err := encryptor.EncryptString(masterKey, []byte(plainSecret))
 	if err != nil {
-		log.Warn("encrypting error", sl.Err(err))
+		log.Error("app registration failed: cannot encrypt the app secret",
+			slog.Int("master_key_len", len(masterKey)),
+			slog.String("expected_key_len", "16, 24 or 32 bytes"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, "", err
 	}
 
 	id, err := a.appProvider.RegisterApp(ctx, appName, encrypted, redirectURI)
 	if err != nil {
 		if errors.Is(err, storage.ErrAppExists) {
-			log.Warn("app already exists", sl.Err(err))
+			log.Warn("app registration rejected: application already exists",
+				slog.String("reason", "app_exists"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
 			return 0, "", ErrAppExists
 		}
 
-		log.Warn("register app error", sl.Err(err))
+		// The original code mapped every storage failure to
+		// ErrInvalidCredentials, so a database outage surfaced as a credential
+		// problem. The log now records what actually happened.
+		log.Error("app registration failed: storage error",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, "", ErrInvalidCredentials
 	}
 
-	a.appSecrets.Store(id, hex.EncodeToString(secretKey))
+	a.appSecrets.Store(id, plainSecret)
 
-	return id, hex.EncodeToString(secretKey), nil
+	log.Info("application registered",
+		slog.Int64(logger.KeyAppID, id),
+		sl.Token("app_secret", plainSecret),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess))
+
+	return id, plainSecret, nil
 }
 
 func (a *Auth) DeleteApp(ctx context.Context, appID int64) error {
 	const op = "auth.DeleteApp"
-	log := a.log.With(slog.String("op", op))
-	log.Info("deleting app")
+	log := logger.Op(ctx, a.log, op).With(slog.Int64(logger.KeyAppID, appID))
+	log.Info("deleting application",
+		slog.String("impact", "all tokens signed with this app secret stop validating"))
 
 	err := a.appProvider.DeleteApp(ctx, appID)
 	if err != nil {
@@ -468,20 +646,36 @@ func (a *Auth) DeleteApp(ctx context.Context, appID int64) error {
 
 func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, error) {
 	const op = "auth.UpdateRefreshToken"
-	log := a.log.With(slog.String("op", op))
-	log.Info("trying to update refresh token", "Old token", fmt.Sprintf("***%s", tokenFingerprint(token)))
+	start := time.Now()
+	log := logger.Op(ctx, a.log, op).With(sl.Token("old_refresh", token))
 
+	// Every branch below used to log the word "error" and nothing else, which
+	// told an operator that rotation failed but not at which of the four steps.
 	fields, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
 	if err != nil {
-		log.Warn("error", sl.Err(err))
+		if errors.Is(err, storage.ErrTokenNotFound) {
+			log.Warn("rotation rejected: token not found in store",
+				slog.String("reason", "token_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
+			return "", fmt.Errorf("%s: %w", op, err)
+		}
+		log.Error("rotation failed: token store unreachable",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
 
+	log = log.With(
+		slog.Int64(logger.KeyUserID, fields.UserID),
+		slog.Int64(logger.KeyAppID, fields.AppId),
+	)
+
 	secret, ok := a.appSecrets.Load(fields.AppId)
 	if !ok {
+		log.Debug("app secret not cached, loading from storage")
 		app, err := a.appProvider.App(ctx, fields.AppId)
 		if err != nil {
-			log.Warn("error", sl.Err(err))
+			log.Error("rotation failed: cannot load application secret",
+				slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 			return "", fmt.Errorf("%s: %w", op, err)
 		}
 		secret = app.Secret
@@ -489,105 +683,185 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 
 	refreshToken, err := jwt.NewRefreshToken(fields.UserID, fields.AppId, a.RefreshTokenTTL, secret.(string))
 	if err != nil {
-		log.Warn("error", sl.Err(err))
+		log.Error("rotation failed: cannot sign the new refresh token",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	err = a.jwtProvider.SetNewRefreshToken(ctx, token, refreshToken, a.RefreshTokenTTL)
-	if err != nil {
-		log.Warn("error", sl.Err(err))
+	if err := a.jwtProvider.SetNewRefreshToken(ctx, token, refreshToken, a.RefreshTokenTTL); err != nil {
+		// The client is about to be handed a token the store does not know, so
+		// its next refresh will fail and the user will be signed out.
+		log.Error("rotation failed: the new token was not persisted",
+			slog.String("impact", "client would receive a token the store does not know"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
+
+	log.Info("refresh token rotated",
+		sl.Token("new_refresh", refreshToken),
+		slog.Duration("refresh_ttl", a.RefreshTokenTTL),
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 
 	return refreshToken, nil
 }
 
+// verificationTokenTTL must stay in step with the copy in the email template.
+const verificationTokenTTL = 72 * time.Hour
+
 func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
-	const op = "auth.VerifyUser"
-	log := a.log.With(slog.String("op", op))
-	log.Info("verifying user")
+	const op = "auth.VerifyUserEmail"
+	start := time.Now()
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		sl.Email(email),
+		sl.Token("presented_verification", VerificationToken),
+	)
+	log.Debug("verification attempt received")
 
 	usr, err := a.usrProvider.UserByEmail(ctx, email, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
-			log.Warn("user not found", sl.Err(err))
+			log.Warn("verification rejected: no account for this address",
+				slog.String("reason", "user_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
 			return ErrUserNotFound
 		}
 
+		log.Error("verification failed: user lookup error",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	if usr.LastTokenGeneratedTime.Valid && time.Since(usr.LastTokenGeneratedTime.Time) > 72*time.Hour {
-		log.Warn("verification token expired")
-		return fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
+	log = log.With(slog.Int64(logger.KeyUserID, usr.ID))
+
+	if usr.IsVerified {
+		// Users click the link twice. Recording it separately keeps that out of
+		// the "invalid token" bucket, which should stay small enough to notice.
+		log.Info("verification skipped: account is already verified",
+			slog.String("reason", "already_verified"),
+			slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+			sl.Since(start))
+		return nil
+	}
+
+	if usr.LastTokenGeneratedTime.Valid {
+		age := time.Since(usr.LastTokenGeneratedTime.Time)
+		if age > verificationTokenTTL {
+			log.Warn("verification rejected: token expired",
+				slog.String("reason", "token_expired"),
+				slog.Time("token_issued_at", usr.LastTokenGeneratedTime.Time),
+				slog.Duration("token_age", age),
+				slog.Duration("ttl", verificationTokenTTL),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected),
+				sl.Since(start))
+			return fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
+		}
+	} else {
+		// Nothing to measure the age against, so the expiry check silently
+		// passes. Worth knowing about: it means the row predates the column.
+		log.Warn("verification token has no issue timestamp, expiry not enforced",
+			slog.String("reason", "missing_issued_at"))
 	}
 
 	if usr.VerificationCode != VerificationToken {
-		log.Warn("invalid verification token")
+		// Both fingerprints, never the values: enough to tell "the user clicked
+		// an older link" from "this token was never ours".
+		log.Warn("verification rejected: token mismatch",
+			slog.String("reason", "token_mismatch"),
+			sl.Token("expected_verification", usr.VerificationCode),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
+			sl.Since(start))
 		return fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 	}
 
-	err = a.usrProvider.VerifyUser(ctx, email, appID)
-	if err != nil {
-		log.Warn("error verifying user", sl.Err(err))
+	if err := a.usrProvider.VerifyUser(ctx, email, appID); err != nil {
+		log.Error("verification failed: cannot mark account verified",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	log.Info("user verified successfully")
+	log.Info("account verified",
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 	return nil
 }
 
 func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {
 	const op = "auth.GenerateNewVerificationToken"
-	log := a.log.With(slog.String("op", op))
-	log.Info("generating new verification token")
+	start := time.Now()
+	log := logger.Op(ctx, a.log, op).With(
+		slog.Int64(logger.KeyAppID, appID),
+		sl.Email(email),
+	)
+	log.Info("issuing a new verification token")
 
-	_, err := a.usrProvider.UserByEmail(ctx, email, appID)
+	usr, err := a.usrProvider.UserByEmail(ctx, email, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
-			log.Warn("user not found", sl.Err(err))
+			// This endpoint takes an arbitrary address, so it doubles as an
+			// account-existence probe. Repeated misses from one source are the
+			// signature of enumeration and need to be visible.
+			log.Warn("resend rejected: no account for this address",
+				slog.String("reason", "user_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
 			return ErrUserNotFound
 		}
 
+		log.Error("resend failed: user lookup error",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	log = log.With(slog.Int64(logger.KeyUserID, usr.ID))
+
+	if usr.IsVerified {
+		log.Info("resend requested for an already verified account",
+			slog.String("reason", "already_verified"))
 	}
 
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
-			log.Warn("app not found", sl.Err(err))
+			log.Warn("resend rejected: unknown application",
+				slog.String("reason", "app_not_found"),
+				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
 			return storage.ErrAppNotFound
 		}
 
+		log.Error("resend failed: cannot load application",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	newVerificationToken, err := tokengenerator.GenerateToken()
 	if err != nil {
-		log.Warn("error generating new verification token", sl.Err(err))
+		log.Error("resend failed: cannot generate token",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	err = a.usrProvider.UpdateVerificationToken(ctx, email, appID, newVerificationToken)
-	if err != nil {
-		log.Warn("error updating verification token", sl.Err(err))
+	if err := a.usrProvider.UpdateVerificationToken(ctx, email, appID, newVerificationToken); err != nil {
+		log.Error("resend failed: cannot store the new token",
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	err = a.EmailService.SendVerificationEmail(email, newVerificationToken, app.RedirectURI)
-	if err != nil {
-		log.Warn("error sending verification email", sl.Err(err))
+	// Ordering matters for diagnosis: past this point the previous token is
+	// already dead, so a send failure leaves the user with no working link.
+	log.Debug("verification token rotated, previous token is now invalid",
+		sl.Token("new_verification", newVerificationToken))
+
+	if err := a.EmailService.SendVerificationEmail(email, newVerificationToken, app.RedirectURI); err != nil {
+		log.Error("resend failed: token was rotated but the email was not sent",
+			slog.String("impact", "the previous link no longer works and no new one was delivered"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	log.Info("new verification token generated successfully")
+	log.Info("verification email resent",
+		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
+		sl.Since(start))
 	return nil
-}
-
-func tokenFingerprint(token string) string {
-	if token == "" {
-		return "empty"
-	}
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:8])
 }

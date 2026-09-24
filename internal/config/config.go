@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
@@ -38,7 +39,7 @@ type PostgresConfig struct {
 	Host             string        `yaml:"host"`
 	ConnectionString string        `yaml:"-"`
 	ReaperDelay      time.Duration `yaml:"reaper_delay"`
-	SSLMode          string          `yaml:"sslmode"`
+	SSLMode          string        `yaml:"sslmode"`
 }
 
 type RedisConfig struct {
@@ -50,8 +51,8 @@ type RedisConfig struct {
 }
 
 type SMTPConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
 	Username string `yaml:"-" env:"SMTP_USERNAME" env-required:"true"`
 	Password string `yaml:"-" env:"SMTP_PASSWORD" env-required:"true"`
 }
@@ -100,15 +101,30 @@ func MustLoadByPath(path string) *Config {
 	return &cfg
 }
 
-// flag > env > default
-func fetchConfigPath() string {
-	var res string
-	flag.StringVar(&res, "c", "", "path to config file")
-	flag.Parse()
+var (
+	configPathFlag     string
+	configPathFlagOnce sync.Once
+)
 
-	if res == "" {
-		res = os.Getenv("CONFIG_PATH")
+// fetchConfigPath resolves the config location: flag > env.
+//
+// Registering "-c" happens once. flag.StringVar panics when the same name is
+// registered twice on the global FlagSet, so a second call to this function —
+// from a test, or from any future caller — used to take the process down.
+// Parse is likewise skipped when the flags have already been parsed, which is
+// the case inside a test binary.
+func fetchConfigPath() string {
+	configPathFlagOnce.Do(func() {
+		flag.StringVar(&configPathFlag, "c", "", "path to config file")
+	})
+
+	if !flag.Parsed() {
+		flag.Parse()
 	}
 
-	return res
+	if configPathFlag != "" {
+		return configPathFlag
+	}
+
+	return os.Getenv("CONFIG_PATH")
 }

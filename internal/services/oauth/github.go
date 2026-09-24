@@ -11,8 +11,11 @@ import (
 )
 
 type GithubOAuth struct {
-	config     *oauth2.Config
-	userAPIURL string
+	config *oauth2.Config
+	// Endpoint URLs are fields rather than literals so the provider flow can be
+	// exercised against a stub server instead of api.github.com.
+	userAPIURL   string
+	emailsAPIURL string
 }
 
 type GithubUser struct {
@@ -39,7 +42,8 @@ func NewGithubConfig() *GithubOAuth {
 			},
 			Scopes: []string{"user:email", "read:user"},
 		},
-		userAPIURL: "https://api.github.com/user",
+		userAPIURL:   "https://api.github.com/user",
+		emailsAPIURL: "https://api.github.com/user/emails",
 	}
 }
 
@@ -91,7 +95,7 @@ func (g *GithubOAuth) getUserDataFromGitHub(ctx context.Context, code string) (*
 }
 
 func (g *GithubOAuth) getUserEmail(ctx context.Context, client *http.Client) (string, error) {
-	resp, err := client.Get("https://api.github.com/user/emails")
+	resp, err := client.Get(g.emailsAPIURL)
 	if err != nil {
 		return "", err
 	}

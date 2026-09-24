@@ -16,6 +16,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// argInt64 reads a mock return as int64 whether the test supplied an int or an
+// int64; testify's args.Int panics on the latter.
+func argInt64(args mock.Arguments, index int) int64 {
+	switch v := args.Get(index).(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case nil:
+		return 0
+	default:
+		panic("unexpected id type in mock return")
+	}
+}
+
 type MockAuth struct {
 	mock.Mock
 }
@@ -27,7 +42,7 @@ func (m *MockAuth) Login(ctx context.Context, identifier models.UserIdentifier, 
 
 func (m *MockAuth) RegisterNewUser(ctx context.Context, email, username, password string, appID int64) (int64, error) {
 	args := m.Called(ctx, email, username, password, appID)
-	return int64(args.Int(0)), args.Error(2)
+	return argInt64(args, 0), args.Error(1)
 }
 
 func (m *MockAuth) RefreshToken(ctx context.Context, token string) (string, error) {
@@ -48,40 +63,42 @@ func (m *MockAuth) DeleteUser(ctx context.Context, identifier models.UserIdentif
 func (m *MockAuth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier, appID int64) error {
 	args := m.Called(ctx, identifier, appID)
 	return args.Error(0)
-} // DON'T TESTED
+}
 
 func (m *MockAuth) DeleteApp(ctx context.Context, appID int64) error {
 	args := m.Called(ctx, appID)
 	return args.Error(0)
-} // DON'T TESTED
+}
 
 func (m *MockAuth) IsAdmin(ctx context.Context, userID, appID int64) (bool, error) {
 	args := m.Called(ctx, userID, appID)
 	return args.Bool(0), args.Error(1)
-} // DON'T TESTED
+}
 
 func (m *MockAuth) MakeAdmin(ctx context.Context, userID, appID int64) (int64, error) {
 	args := m.Called(ctx, userID, appID)
-	return int64(args.Int(0)), args.Error(1)
-} // DON'T TESTED
+	return argInt64(args, 0), args.Error(1)
+}
 
 func (m *MockAuth) RegisterApp(ctx context.Context, name, redirectURI string) (int64, string, error) {
-	panic("implement me!")
-} // DON'T TESTED
+	args := m.Called(ctx, name, redirectURI)
+	return argInt64(args, 0), args.String(1), args.Error(2)
+}
 
 func (m *MockAuth) Logout(ctx context.Context, token string) error {
-	panic("implement me")
-} // DON'T TESTED
+	args := m.Called(ctx, token)
+	return args.Error(0)
+}
 
 func (m *MockAuth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
 	args := m.Called(ctx, email, VerificationToken, appID)
 	return args.Error(0)
-} // DON'T TESTED
+}
 
-func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) (error) {
+func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {
 	args := m.Called(ctx, email, appID)
 	return args.Error(0)
-} // DON'T TESTED
+}
 
 func TestLogin(t *testing.T) {
 	tests := []struct {

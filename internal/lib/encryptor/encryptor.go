@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 
 	"golang.org/x/crypto/bcrypt"
@@ -62,7 +63,14 @@ func DecryptString(masterkey []byte, encoded string) (string, error) {
 		return "", err
 	}
 
+	// Slicing the nonce off without a length check panics on any stored value
+	// shorter than the nonce, which takes the process down instead of failing
+	// one decryption.
 	nonceSize := gcm.NonceSize()
+	if len(cipherText) < nonceSize {
+		return "", fmt.Errorf("ciphertext is %d bytes, shorter than the %d-byte nonce", len(cipherText), nonceSize)
+	}
+
 	nonce := cipherText[:nonceSize]
 	data := cipherText[nonceSize:]
 
@@ -74,7 +82,7 @@ func DecryptString(masterkey []byte, encoded string) (string, error) {
 	return string(plainText), nil
 }
 
-type PasswordHasher struct {}
+type PasswordHasher struct{}
 
 func NewPasswordHasher() *PasswordHasher {
 	return &PasswordHasher{}
