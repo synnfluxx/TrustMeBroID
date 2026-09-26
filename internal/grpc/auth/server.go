@@ -38,7 +38,7 @@ type Auth interface {
 	UpdateRefreshToken(ctx context.Context, token string) (string, error)
 	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
 	Logout(ctx context.Context, token string) error
-	VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error
+	VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) (accessToken, refreshToken string, err error)
 	GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error
 }
 
@@ -84,6 +84,9 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.NotFound, "user not found")
 			}
+			if errors.Is(err, auth.ErrUserNotVerified) {
+				return nil, status.Error(codes.FailedPrecondition, "email not verified")
+			}
 
 			return nil, status.Error(codes.Internal, "internal error")
 		}
@@ -108,6 +111,9 @@ func (s *serverAPI) Login(ctx context.Context, req *ssov1.LoginRequest) (*ssov1.
 			}
 			if errors.Is(err, storage.ErrUserNotFound) {
 				return nil, status.Error(codes.NotFound, "user not found")
+			}
+			if errors.Is(err, auth.ErrUserNotVerified) {
+				return nil, status.Error(codes.FailedPrecondition, "email not verified")
 			}
 
 			return nil, status.Error(codes.Internal, "internal error")
@@ -348,40 +354,60 @@ func (s *serverAPI) RefreshAccessToken(ctx context.Context, req *ssov1.RefreshTo
 	}, nil
 }
 
-func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailRequest) (*ssov1.Empty, error) {
+func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailRequest) (*ssov1.VerifyEmailResponse, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
-	
+
 	if req.GetEmail() == emptyString {
 		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
 
-	err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationToken(), req.GetAppId())
+	if req.GetVerificationToken() == emptyString {
+		return nil, status.Error(codes.InvalidArgument, "verification_token is required")
+	}
+
+	accessToken, refreshToken, err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationToken(), req.GetAppId())
 	if err != nil {
-		if errors.Is(err, storage.ErrUserNotFound) {
-			return nil, status.Error(codes.InvalidArgument, "invalid credentials")
+		// Each of these used to collapse into Internal, because the handler
+		// matched storage.ErrUserNotFound while the service returns its own
+		// sentinels. The caller could not tell a mistyped code from an outage.
+		switch {
+		case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, storage.ErrUserNotFound):
+			return nil, status.Error(codes.NotFound, "user not found")
+		case errors.Is(err, auth.ErrVerificationTokenExpired):
+			return nil, status.Error(codes.FailedPrecondition, "verification token expired")
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			return nil, status.Error(codes.InvalidArgument, "invalid verification token")
+		case errors.Is(err, storage.ErrAppNotFound):
+			return nil, status.Error(codes.NotFound, "app not found")
 		}
 
 		return nil, status.Error(codes.Internal, "internal server error")
 	}
 
-	return &ssov1.Empty{}, nil
+	return &ssov1.VerifyEmailResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	}, nil
 }
 
 func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1.GenerateNewVerificationTokenRequest) (*ssov1.Empty, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
-	
+
 	if req.GetEmail() == emptyString {
 		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
-	
+
 	err := s.auth.GenerateNewVerificationToken(ctx, req.GetEmail(), req.GetAppId())
 	if err != nil {
-		if errors.Is(err, storage.ErrUserNotFound) {
-			return nil, status.Error(codes.InvalidArgument, "user not found")
+		switch {
+		case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, storage.ErrUserNotFound):
+			return nil, status.Error(codes.NotFound, "user not found")
+		case errors.Is(err, storage.ErrAppNotFound):
+			return nil, status.Error(codes.NotFound, "app not found")
 		}
 
 		return nil, status.Error(codes.Internal, "internal server error")

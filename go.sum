@@ -230,8 +230,8 @@ github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=
 github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
-gitlab.com/synnfluxx/protos v0.0.0-20260922081407-ac5ae29cfc88 h1:NoLtsLauyIRjLMbIapT1sCmzrHQcDM4gGdhTUogkXIg=
-gitlab.com/synnfluxx/protos v0.0.0-20260922081407-ac5ae29cfc88/go.mod h1:tHOM+vcR0ytGLt4rhU7vYBa4p1zrgtaSBbljvMzpdtM=
+gitlab.com/synnfluxx/protos v0.0.0-20260924115023-beed479cb950 h1:9PMV4Ef19k6eLu5fmLRPOdoPGRHzdvQmpD6hBJVdIMQ=
+gitlab.com/synnfluxx/protos v0.0.0-20260924115023-beed479cb950/go.mod h1:tHOM+vcR0ytGLt4rhU7vYBa4p1zrgtaSBbljvMzpdtM=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 h1:CqXxU8VOmDefoh0+ztfGaymYbhdB/tT3zs79QaZTNGY=

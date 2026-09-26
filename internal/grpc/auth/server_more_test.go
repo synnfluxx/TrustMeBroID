@@ -339,13 +339,17 @@ func TestUpdateRefreshToken(t *testing.T) {
 func TestVerifyUserEmail(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		api, m := newAPI()
-		m.On("VerifyUserEmail", mock.Anything, "user@example.com", "code", int64(1)).Return(nil)
+		m.On("VerifyUserEmail", mock.Anything, "user@example.com", "code", int64(1)).
+			Return("access-token", "refresh-token", nil)
 
-		_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
+		resp, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
 			Email: "user@example.com", VerificationToken: "code", AppId: 1,
 		})
 
 		require.NoError(t, err)
+		// Confirming proves ownership, so the response carries a session.
+		require.Equal(t, "access-token", resp.GetAccessToken())
+		require.Equal(t, "refresh-token", resp.GetRefreshToken())
 	})
 
 	t.Run("app id is required", func(t *testing.T) {
@@ -364,24 +368,42 @@ func TestVerifyUserEmail(t *testing.T) {
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
 
-	// The service returns auth.ErrUserNotFound but the handler matches on
-	// storage.ErrUserNotFound, so every business rejection surfaces as a 500.
-	t.Run("business rejections collapse into Internal", func(t *testing.T) {
-		for _, serviceErr := range []error{
-			auth.ErrUserNotFound,
-			auth.ErrInvalidCredentials,
-			auth.ErrVerificationTokenExpired,
-		} {
+	// Each rejection now carries a distinct code, so the client can tell a
+	// mistyped code from an expired one from an outage.
+	t.Run("rejections map to distinct codes", func(t *testing.T) {
+		cases := []struct {
+			serviceErr error
+			want       codes.Code
+		}{
+			{auth.ErrUserNotFound, codes.NotFound},
+			{auth.ErrVerificationTokenExpired, codes.FailedPrecondition},
+			{auth.ErrInvalidCredentials, codes.InvalidArgument},
+			{storage.ErrAppNotFound, codes.NotFound},
+			{errors.New("redis down"), codes.Internal},
+		}
+
+		for _, tc := range cases {
 			api, m := newAPI()
-			m.On("VerifyUserEmail", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(serviceErr)
+			m.On("VerifyUserEmail", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Return("", "", tc.serviceErr)
 
 			_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
 				Email: "user@example.com", VerificationToken: "code", AppId: 1,
 			})
 
-			require.Equal(t, codes.Internal, status.Code(err),
-				"%v is reported to the client as an internal error", serviceErr)
+			require.Equal(t, tc.want, status.Code(err), "for %v", tc.serviceErr)
 		}
+	})
+
+	t.Run("verification token is required", func(t *testing.T) {
+		api, m := newAPI()
+
+		_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
+			Email: "user@example.com", AppId: 1,
+		})
+
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		m.AssertNotCalled(t, "VerifyUserEmail", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }
 
@@ -408,8 +430,7 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
 
-	// Same mismatch as VerifyUserEmail: "no such address" becomes a 500.
-	t.Run("unknown address collapses into Internal", func(t *testing.T) {
+	t.Run("unknown address is reported as not found", func(t *testing.T) {
 		api, m := newAPI()
 		m.On("GenerateNewVerificationToken", mock.Anything, mock.Anything, mock.Anything).
 			Return(auth.ErrUserNotFound)
@@ -417,7 +438,7 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 		_, err := api.GenerateNewVerificationToken(context.Background(),
 			&ssov1.GenerateNewVerificationTokenRequest{Email: "user@example.com", AppId: 1})
 
-		require.Equal(t, codes.Internal, status.Code(err))
+		require.Equal(t, codes.NotFound, status.Code(err))
 	})
 }
 

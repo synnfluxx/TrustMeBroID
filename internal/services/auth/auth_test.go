@@ -538,80 +538,121 @@ func TestRegisterNewUser_Failures(t *testing.T) {
 func TestVerifyUserEmail(t *testing.T) {
 	recent := sql.NullTime{Time: time.Now().Add(-time.Hour), Valid: true}
 	stale := sql.NullTime{Time: time.Now().Add(-100 * time.Hour), Valid: true}
+	app := models.App{ID: 1, Secret: "app-secret"}
 
-	t.Run("success", func(t *testing.T) {
-		svc, storageMock, _, _, _ := newTestAuth()
+	// Confirming proves ownership of the account, so it ends in a session.
+	t.Run("confirms and issues a session", func(t *testing.T) {
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
 			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: recent,
 		}, nil)
 		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
+		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
+		jwtMock.On("SaveRefreshToken", mock.Anything, mock.AnythingOfType("string"), int64(3), int64(1), testRefreshTTL).Return(nil)
 
-		require.NoError(t, svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1))
+		access, refresh, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
+
+		require.NoError(t, err)
+		require.NotEmpty(t, access)
+		require.NotEmpty(t, refresh)
 		storageMock.AssertExpectations(t)
+		jwtMock.AssertExpectations(t)
+	})
+
+	// The response is now a session, so a path that skipped the code check
+	// would hand one to anyone who knows a registered address.
+	t.Run("an already verified account still has to present the code", func(t *testing.T) {
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
+		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
+			ID: 3, IsVerified: true, VerificationCode: "expected", LastTokenGeneratedTime: recent,
+		}, nil)
+
+		access, refresh, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "guessed", 1)
+
+		require.ErrorIs(t, err, ErrInvalidCredentials)
+		require.Empty(t, access)
+		require.Empty(t, refresh)
+		jwtMock.AssertNotCalled(t, "SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("a correct code on an already verified account is idempotent", func(t *testing.T) {
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
+		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
+			ID: 3, IsVerified: true, VerificationCode: "code", LastTokenGeneratedTime: recent,
+		}, nil)
+		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
+		jwtMock.On("SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		access, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
+
+		require.NoError(t, err)
+		require.NotEmpty(t, access)
+		// Nothing to write: the row is already marked verified.
+		storageMock.AssertNotCalled(t, "VerifyUser", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("wrong code", func(t *testing.T) {
-		svc, storageMock, _, _, _ := newTestAuth()
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
 			VerificationCode: "expected", LastTokenGeneratedTime: recent,
 		}, nil)
 
-		err := svc.VerifyUserEmail(context.Background(), "a@b.c", "presented", 1)
+		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "presented", 1)
 
 		require.ErrorIs(t, err, ErrInvalidCredentials)
 		storageMock.AssertNotCalled(t, "VerifyUser", mock.Anything, mock.Anything, mock.Anything)
+		jwtMock.AssertNotCalled(t, "SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("expired code", func(t *testing.T) {
-		svc, storageMock, _, _, _ := newTestAuth()
-		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			VerificationCode: "code", LastTokenGeneratedTime: stale,
-		}, nil)
-
-		err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
-
-		require.ErrorIs(t, err, ErrVerificationTokenExpired)
-		storageMock.AssertNotCalled(t, "VerifyUser", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("expiry is checked before the code", func(t *testing.T) {
-		// An expired code must not fall through to a code comparison that
-		// could report "invalid" and hide the real reason from the user.
+	t.Run("expired code, checked before the code itself", func(t *testing.T) {
 		svc, storageMock, _, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
 			VerificationCode: "expected", LastTokenGeneratedTime: stale,
 		}, nil)
 
-		err := svc.VerifyUserEmail(context.Background(), "a@b.c", "wrong-too", 1)
+		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "wrong-too", 1)
 
 		require.ErrorIs(t, err, ErrVerificationTokenExpired)
-	})
-
-	t.Run("already verified is idempotent", func(t *testing.T) {
-		svc, storageMock, _, _, _ := newTestAuth()
-		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			IsVerified: true, VerificationCode: "code", LastTokenGeneratedTime: recent,
-		}, nil)
-
-		require.NoError(t, svc.VerifyUserEmail(context.Background(), "a@b.c", "anything", 1))
-		storageMock.AssertNotCalled(t, "VerifyUser", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("unknown address", func(t *testing.T) {
 		svc, storageMock, _, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{}, storage.ErrUserNotFound)
 
-		require.ErrorIs(t, svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1), ErrUserNotFound)
+		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
+
+		require.ErrorIs(t, err, ErrUserNotFound)
 	})
 
 	t.Run("missing issue timestamp does not enforce expiry", func(t *testing.T) {
-		svc, storageMock, _, _, _ := newTestAuth()
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			VerificationCode: "code", LastTokenGeneratedTime: sql.NullTime{},
+			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: sql.NullTime{},
 		}, nil)
 		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
+		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
+		jwtMock.On("SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-		require.NoError(t, svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1))
+		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
+
+		require.NoError(t, err)
+	})
+
+	// The address is confirmed even when the session cannot be created, so the
+	// caller must not be told the confirmation failed outright.
+	t.Run("account is marked verified even if the session cannot be issued", func(t *testing.T) {
+		svc, storageMock, jwtMock, _, _ := newTestAuth()
+		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
+			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: recent,
+		}, nil)
+		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
+		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
+		jwtMock.On("SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errRedisDown)
+
+		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "code", 1)
+
+		require.ErrorIs(t, err, errRedisDown)
+		storageMock.AssertCalled(t, "VerifyUser", mock.Anything, "a@b.c", int64(1))
 	})
 }
 

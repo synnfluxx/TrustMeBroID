@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -709,7 +710,7 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 // verificationTokenTTL must stay in step with the copy in the email template.
 const verificationTokenTTL = 72 * time.Hour
 
-func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
+func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) (string, string, error) {
 	const op = "auth.VerifyUserEmail"
 	start := time.Now()
 	log := logger.Op(ctx, a.log, op).With(
@@ -725,26 +726,19 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 			log.Warn("verification rejected: no account for this address",
 				slog.String("reason", "user_not_found"),
 				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
-			return ErrUserNotFound
+			return "", "", ErrUserNotFound
 		}
 
 		log.Error("verification failed: user lookup error",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
-		return fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	log = log.With(slog.Int64(logger.KeyUserID, usr.ID))
 
-	if usr.IsVerified {
-		// Users click the link twice. Recording it separately keeps that out of
-		// the "invalid token" bucket, which should stay small enough to notice.
-		log.Info("verification skipped: account is already verified",
-			slog.String("reason", "already_verified"),
-			slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
-			sl.Since(start))
-		return nil
-	}
-
+	// The code is checked before anything else, including the already-verified
+	// shortcut. This call now hands back a session, so a path that skipped the
+	// check would let anyone who knows a registered address obtain one.
 	if usr.LastTokenGeneratedTime.Valid {
 		age := time.Since(usr.LastTokenGeneratedTime.Time)
 		if age > verificationTokenTTL {
@@ -755,36 +749,75 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 				slog.Duration("ttl", verificationTokenTTL),
 				slog.String(logger.KeyOutcome, logger.OutcomeRejected),
 				sl.Since(start))
-			return fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
+			return "", "", fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
 		}
 	} else {
-		// Nothing to measure the age against, so the expiry check silently
-		// passes. Worth knowing about: it means the row predates the column.
 		log.Warn("verification token has no issue timestamp, expiry not enforced",
 			slog.String("reason", "missing_issued_at"))
 	}
 
-	if usr.VerificationCode != VerificationToken {
-		// Both fingerprints, never the values: enough to tell "the user clicked
-		// an older link" from "this token was never ours".
+	if subtle.ConstantTimeCompare([]byte(usr.VerificationCode), []byte(VerificationToken)) != 1 {
 		log.Warn("verification rejected: token mismatch",
 			slog.String("reason", "token_mismatch"),
 			sl.Token("expected_verification", usr.VerificationCode),
 			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
 			sl.Since(start))
-		return fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 	}
 
-	if err := a.usrProvider.VerifyUser(ctx, email, appID); err != nil {
+	if usr.IsVerified {
+		// Users click the link twice. The code was still checked above, so
+		// issuing a session here is safe and keeps the flow idempotent.
+		log.Info("account was already verified, issuing a session anyway",
+			slog.String("reason", "already_verified"))
+	} else if err := a.usrProvider.VerifyUser(ctx, email, appID); err != nil {
 		log.Error("verification failed: cannot mark account verified",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
-		return fmt.Errorf("%s: %w", op, err)
+		return "", "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	log.Info("account verified",
+	accessToken, refreshToken, err := a.issueSession(ctx, log, usr.ID, appID)
+	if err != nil {
+		// The address is confirmed either way; only the session failed. The
+		// caller can still log in with the password.
+		log.Error("account verified but the session could not be issued",
+			slog.String("impact", "the address is confirmed; the user must log in manually"),
+			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
+			sl.Err(err), sl.Since(start))
+		return "", "", fmt.Errorf("%s: %w", op, err)
+	}
+
+	log.Info("account verified and signed in",
+		sl.Token("refresh", refreshToken),
 		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
 		sl.Since(start))
-	return nil
+
+	return accessToken, refreshToken, nil
+}
+
+// issueSession mints and persists a token pair for a user whose identity has
+// just been established. Shared by Login and by email verification so both
+// paths produce sessions with identical lifetimes and storage.
+func (a *Auth) issueSession(ctx context.Context, log *slog.Logger, userID, appID int64) (string, string, error) {
+	app, err := a.appProvider.App(ctx, appID)
+	if err != nil {
+		log.Error("cannot load application secret", sl.Err(err))
+		return "", "", err
+	}
+
+	accessToken, refreshToken, err := jwt.NewTokens(userID, app.ID, app.Secret, a.RefreshTokenTTL, a.AccessTokenTTL)
+	if err != nil {
+		log.Error("cannot sign tokens", sl.Err(err))
+		return "", "", err
+	}
+
+	if err := a.jwtProvider.SaveRefreshToken(ctx, refreshToken, userID, app.ID, a.RefreshTokenTTL); err != nil {
+		log.Error("refresh token not persisted",
+			slog.String("impact", "the session would end at the first refresh"), sl.Err(err))
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, nil
 }
 
 func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {

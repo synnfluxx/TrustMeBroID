@@ -90,9 +90,9 @@ func (m *MockAuth) Logout(ctx context.Context, token string) error {
 	return args.Error(0)
 }
 
-func (m *MockAuth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) error {
+func (m *MockAuth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) (string, string, error) {
 	args := m.Called(ctx, email, VerificationToken, appID)
-	return args.Error(0)
+	return args.String(0), args.String(1), args.Error(2)
 }
 
 func (m *MockAuth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {

@@ -21,7 +21,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	gitlab.com/synnfluxx/protos v0.0.0-20260922081407-ac5ae29cfc88
+	gitlab.com/synnfluxx/protos v0.0.0-20260924115023-beed479cb950
 	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
