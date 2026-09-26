@@ -5,20 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
 	discardHandler "github.com/synnfluxx/TrustMeBroID/internal/lib/logger/handlers/discardHandler"
 	strg "github.com/synnfluxx/TrustMeBroID/internal/storage"
+	"github.com/synnfluxx/TrustMeBroID/migrations"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -56,7 +53,6 @@ func createPostgresDB(t *testing.T) *sql.DB {
 	requireDocker(t)
 
 	ctx := context.Background()
-	migrationsPath := "file://" + migrationsDir(t)
 
 	pgContainer, err := postgres.Run(ctx,
 		"postgres:alpine",
@@ -75,12 +71,12 @@ func createPostgresDB(t *testing.T) *sql.DB {
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	runMigrations(t, connStr, migrationsPath)
-
 	db, err := sql.Open("postgres", connStr)
 	require.NoError(t, err)
 
 	require.NoError(t, db.Ping())
+
+	runMigrations(t, db)
 	t.Cleanup(func() {
 		require.NoError(t, db.Close())
 	})
@@ -88,28 +84,22 @@ func createPostgresDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func migrationsDir(t *testing.T) string {
+// runMigrations brings the test database up with goose, reading the same
+// embedded files that cmd/sso uses at start-up.
+//
+// This used to call golang-migrate against the migrations directory. Those two
+// tools disagree about file naming — golang-migrate wants NNN_name.up.sql and
+// NNN_name.down.sql, goose wants one annotated file — so the tests were
+// validating a schema that production never builds. That is how a column
+// named verify_token in the schema and verification_code in every query
+// reached a running environment: nothing compared the two.
+func runMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	_, filename, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-
-	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations"))
-}
-
-func runMigrations(t *testing.T, connectionString, migrationsPath string) {
-	t.Helper()
-
-	m, err := migrate.New(migrationsPath, connectionString)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		sourceErr, dbErr := m.Close()
-		require.NoError(t, sourceErr)
-		require.NoError(t, dbErr)
-	})
-
-	require.NoError(t, m.Up())
+	goose.SetBaseFS(migrations.MigrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	require.NoError(t, goose.SetDialect("postgres"))
+	require.NoError(t, goose.Up(db, "."))
 }
 
 func newTestStorage(t *testing.T) (*Storage, context.Context) {

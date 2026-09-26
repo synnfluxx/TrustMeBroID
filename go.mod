@@ -8,7 +8,6 @@ require (
 	github.com/dusted-go/logging/v2 v2.0.0-rc-05
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.7.4
 	github.com/ilyakaznacheev/cleanenv v1.5.0
