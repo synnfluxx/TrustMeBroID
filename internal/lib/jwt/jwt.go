@@ -44,7 +44,7 @@ func NewOAuthAccessToken(userID, appID int64, accessDuration time.Duration, appS
 			Issuer:    fmt.Sprint(appID),
 			Subject:   fmt.Sprint(userID),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),	
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessDuration)),
 		},
 	}
 

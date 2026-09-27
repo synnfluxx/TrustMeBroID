@@ -36,8 +36,6 @@ func main() {
 		slog.String("go_version", runtime.Version()),
 		slog.Int("pid", os.Getpid()),
 		slog.String("log_level", logger.Level().String()),
-		// Everything below decides behaviour in production and is the first
-		// thing to check when the service misbehaves after a deploy.
 		slog.Int("grpc_port", cfg.GRPC.Port),
 		slog.String("http_bind_addr", os.Getenv("HTTP_BIND_ADDR")),
 		slog.Duration("access_token_ttl", cfg.AccessTokenTTL),
@@ -81,10 +79,7 @@ func main() {
 	log.Info("service stopped", sl.Since(shutdownStart))
 }
 
-// warnOnRiskyConfig states, once and at startup, the settings that will
-// silently degrade the service later. Each of these has cost an incident
-// somewhere; finding them in the first ten log lines is cheaper than inferring
-// them from symptoms.
+// warnOnRiskyConfig states, once and at startup, the settings that will silently degrade the service later.
 func warnOnRiskyConfig(log *slog.Logger, cfg *config.Config) {
 	if cfg.Env == logger.EnvProd && cfg.DB.SSLMode == "disable" {
 		log.Warn("postgres TLS is disabled in production",
@@ -130,9 +125,7 @@ func runMigrations(log *slog.Logger, dsn string) error {
 	before, _ := goose.GetDBVersion(db)
 
 	if err := goose.Up(db, "."); err != nil {
-		// "already applied" is the steady state on every restart after the
-		// first, not a failure. The previous code logged that and panicked
-		// anyway, which made the log line unreachable in practice.
+		// "already applied" is the steady state on every restart after the first, not a failure.
 		if errors.Is(err, goose.ErrAlreadyApplied) || errors.Is(err, goose.ErrNoNextVersion) {
 			log.Info("migrations already up to date",
 				slog.Int64("version", before),

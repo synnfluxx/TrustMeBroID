@@ -79,9 +79,7 @@ func (s *Storage) GetRefreshTokenFields(ctx context.Context, token string) (*mod
 func (s *Storage) SaveRefreshToken(ctx context.Context, token string, userID int64, appID int64, ttl time.Duration) error {
 	const op = "storage.Redis.SaveRefreshToken"
 
-	// EXPIRE takes whole seconds. Passing a float64 worked only because every
-	// configured TTL happens to be a round number; a fractional TTL would have
-	// been rejected by Redis at runtime.
+	// EXPIRE takes whole seconds.
 	_, err := saveRefreshTokenScript.Run(ctx, s.rdb, []string{token}, userID, appID, int64(ttl.Seconds())).Result()
 
 	if err != nil {
@@ -114,9 +112,7 @@ func (s *Storage) Logout(ctx context.Context, token string) error {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	// Deleting a key that is not there succeeds and returns zero. Reporting it
-	// separates "the session was revoked" from "there was nothing to revoke",
-	// which otherwise look identical to the caller.
+	// Deleting a key that is not there succeeds and returns zero.
 	if cmd.Val() == 0 {
 		return fmt.Errorf("%s: %w", op, storage.ErrTokenNotFound)
 	}

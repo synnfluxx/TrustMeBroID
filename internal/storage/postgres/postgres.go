@@ -17,10 +17,7 @@ import (
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
 )
 
-// Connection pool limits. database/sql defaults to unlimited open connections,
-// while the deployed Postgres runs with max_connections=30 shared with the
-// AuraLift service. Without a ceiling here a traffic spike exhausts the server
-// and every query starts failing with "too many clients".
+// Connection pool limits.
 const (
 	maxOpenConns    = 10
 	maxIdleConns    = 5
@@ -29,7 +26,6 @@ const (
 )
 
 // slowQueryThreshold is the point at which a query is reported on its own.
-// Below it, timings are only visible at debug level.
 const slowQueryThreshold = 200 * time.Millisecond
 
 type Storage struct {
@@ -54,8 +50,6 @@ func New(url string, log *slog.Logger) (*Storage, error) {
 	db.SetConnMaxLifetime(connMaxLifetime)
 	db.SetConnMaxIdleTime(connMaxIdleTime)
 
-	// sql.Open is lazy: without this ping the first failure would surface
-	// inside an unrelated request instead of at startup.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
@@ -90,12 +84,7 @@ func New(url string, log *slog.Logger) (*Storage, error) {
 	return strg, nil
 }
 
-// trace records the outcome of a single statement. Successful fast queries stay
-// at debug so production stays readable; anything slow or failing is promoted,
-// because those are the records someone is actually looking for.
-//
-// Query text is logged, arguments are not: the arguments are emails, password
-// hashes and verification codes.
+// trace records the outcome of a single statement.
 func (s *Storage) trace(ctx context.Context, op string, start time.Time, err error) {
 	elapsed := time.Since(start)
 	log := logger.From(ctx, s.log).With(
@@ -194,8 +183,6 @@ func (s *Storage) SaveUser(ctx context.Context, email string, username string, p
 		var pqErr *pq.Error
 
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-			// Which column collided decides what the user is told, so record
-			// the constraint name rather than a generic "already exists".
 			logger.From(ctx, s.log).Warn("registration rejected: unique constraint violated",
 				slog.String(logger.KeyOp, op),
 				slog.String("constraint", pqErr.Constraint),
@@ -232,8 +219,6 @@ func (s *Storage) getUser(ctx context.Context, query string, args ...any) (model
 	}
 
 	if user.DeletedAt.Valid {
-		// A soft-deleted account still answers lookups, so say why the caller
-		// is refused: otherwise this is indistinguishable from a typo.
 		logger.From(ctx, s.log).Info("user lookup hit a soft-deleted account",
 			slog.String(logger.KeyOp, op),
 			slog.Int64(logger.KeyUserID, user.ID),
@@ -409,8 +394,7 @@ func (s *Storage) App(ctx context.Context, appID int64) (models.App, error) {
 
 	decrypted, err := encryptor.DecryptString(s.masterKey, app.Secret)
 	if err != nil {
-		// Almost always a MASTER_KEY mismatch after a redeploy. Without this
-		// record the symptom is every login failing with a generic 500.
+		// Almost always a MASTER_KEY mismatch after a redeploy.
 		logger.From(ctx, s.log).Error("cannot decrypt application secret",
 			slog.String(logger.KeyOp, op),
 			slog.Int64(logger.KeyAppID, appID),

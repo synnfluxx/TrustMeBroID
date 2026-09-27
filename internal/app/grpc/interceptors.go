@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
-	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -34,8 +34,7 @@ func isAdminMethod(method string) bool {
 	return slices.Contains(adminMethods, method)
 }
 
-// shortMethod turns "/auth.Auth/Login" into "Login" for the log's method field,
-// keeping the full path in a separate attribute for exact matching.
+// shortMethod turns "/auth.Auth/Login" into "Login" for the log's method field, keeping the full path in a separate attribute for exact matching.
 func shortMethod(full string) string {
 	if i := strings.LastIndex(full, "/"); i >= 0 && i+1 < len(full) {
 		return full[i+1:]
@@ -50,12 +49,7 @@ func peerAddr(ctx context.Context) string {
 	return ""
 }
 
-// RecoveryInterceptor turns a panic in a handler into an Internal error plus a
-// log record with the stack.
-//
-// grpc-go does not recover panics itself: without this, a nil dereference in
-// any handler takes the whole SSO process down and the only evidence is a
-// stack on stderr with no request context attached.
+// RecoveryInterceptor turns a panic in a handler into an Internal error plus a log record with the stack.
 func RecoveryInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		defer func() {
@@ -75,11 +69,7 @@ func RecoveryInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	}
 }
 
-// RequestIDInterceptor adopts the caller's correlation id, or mints one, and
-// binds a logger carrying it to the context. Every record produced downstream —
-// service, storage, email — then joins up with the AuraLift request that caused
-// it, which is the only practical way to follow a failure across the two
-// services.
+// RequestIDInterceptor adopts the caller's correlation id, or mints one, and binds a logger carrying it to the context.
 func RequestIDInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		id := ""
@@ -95,8 +85,7 @@ func RequestIDInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 
 		ctx, _ = logger.WithRequestID(ctx, log, id)
 
-		// Echo it back so the caller can tie its own record to ours even when
-		// it did not send one.
+		// Echo it back so the caller can tie its own record to ours even when it did not send one.
 		_ = grpc.SetHeader(ctx, metadata.Pairs(logger.RequestIDHeader, id))
 
 		return handler(ctx, req)
@@ -104,11 +93,6 @@ func RequestIDInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 }
 
 // LoggerInterceptor writes one access record per call.
-//
-// The level follows the gRPC code: a wrong password is not an operational
-// problem and must not page anyone, while codes.Internal always must. The
-// previous implementation logged every error at Error level, which made
-// failed logins indistinguishable from outages.
 func LoggerInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
@@ -149,8 +133,7 @@ func LoggerInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	}
 }
 
-// isClientFault separates "the caller asked for something invalid" from "we
-// broke". Only the second class deserves an error-level record.
+// isClientFault separates "the caller asked for something invalid" from "we broke".
 func isClientFault(code codes.Code) bool {
 	switch code {
 	case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
@@ -162,10 +145,7 @@ func isClientFault(code codes.Code) bool {
 	}
 }
 
-// AdminRequestsInterceptor guards the methods that can delete users and
-// applications. Every rejection is logged: repeated failures here are the
-// signature of someone probing the admin surface, and previously they were
-// indistinguishable from any other error.
+// AdminRequestsInterceptor guards the methods that can delete users and applications.
 func AdminRequestsInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !isAdminMethod(info.FullMethod) {
@@ -194,9 +174,6 @@ func AdminRequestsInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 		}
 
 		if !validateToken(tokens[0]) {
-			// The fingerprint lets an operator confirm whether a caller is
-			// sending a stale token or an unrelated one, without the log
-			// holding a usable credential.
 			reqLog.Warn("admin call rejected: admin token mismatch",
 				slog.String("reason", "invalid_token"),
 				sl.Token("presented", tokens[0]))
@@ -209,8 +186,6 @@ func AdminRequestsInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 }
 
 // RateLimiterInterceptor sheds load once the process-wide budget is spent.
-// Rejections are logged at warn with the configured limit attached, because the
-// usual cause is that the limit is set far below real traffic.
 func RateLimiterInterceptor(log *slog.Logger, limiter *rate.Limiter) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !limiter.Allow() {

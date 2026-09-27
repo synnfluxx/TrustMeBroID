@@ -9,8 +9,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/synnfluxx/TrustMeBroID/tests/suite"
 	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
+	"github.com/synnfluxx/TrustMeBroID/tests/suite"
 )
 
 const (

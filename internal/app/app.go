@@ -24,10 +24,7 @@ type App struct {
 	HTTPSrv *httpApp.App
 }
 
-// New wires the dependency graph. It takes the config struct rather than a
-// positional list: the previous signature had eighteen parameters, five of them
-// time.Duration, so swapping two of them compiled cleanly and changed token
-// lifetimes in production.
+// New wires the dependency graph.
 func New(log *slog.Logger, cfg *config.Config) *App {
 	storage := mustOpenPostgres(log, cfg)
 	redis := mustOpenRedis(log, cfg)
@@ -59,9 +56,6 @@ func mustOpenPostgres(log *slog.Logger, cfg *config.Config) *postgres.Storage {
 
 	storage, err := postgres.New(cfg.DB.ConnectionString, log)
 	if err != nil {
-		// A failed dependency at startup is fatal, but it should say which
-		// dependency and why before the process goes away. panic(err) printed
-		// a bare error with no context about what was being connected to.
 		log.Error("cannot connect to postgres, refusing to start",
 			slog.String("host", cfg.DB.Host),
 			slog.Int("port", cfg.DB.Port),
@@ -97,15 +91,12 @@ func mustOpenRedis(log *slog.Logger, cfg *config.Config) *redisStorage.Storage {
 	return redis
 }
 
-// reaper is the slice of storage the background sweep needs. Narrowing it to
-// one method keeps the loop testable without a database.
+// reaper is the slice of storage the background sweep needs.
 type reaper interface {
 	Reaper(ctx context.Context) ([]int64, error)
 }
 
-// startReaper removes users whose soft-delete grace period has expired. It runs
-// unattended, so each pass reports what it did: a reaper that silently stops
-// deleting is otherwise invisible until the table grows.
+// startReaper removes users whose soft-delete grace period has expired.
 func startReaper(ctx context.Context, log *slog.Logger, storage reaper, delay time.Duration) {
 	log.Info("starting deleted-user reaper", slog.Duration("interval", delay))
 	startReaperLoop(ctx, log, storage, delay)
@@ -129,8 +120,7 @@ func startReaperLoop(ctx context.Context, log *slog.Logger, storage reaper, dela
 				start := time.Now()
 				deleted, err := storage.Reaper(ctx)
 				if err != nil {
-					// Logged and swallowed on purpose: one failed sweep must
-					// not end the loop.
+					// Logged and swallowed on purpose: one failed sweep must not end the loop.
 					reaperLog.Error("reaper pass failed",
 						slog.String(logger.KeyOutcome, logger.OutcomeFailed),
 						sl.Err(err), sl.Since(start))

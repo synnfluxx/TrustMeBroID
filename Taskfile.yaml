@@ -26,3 +26,10 @@ tasks:
             - docker-compose down -v
             - docker-compose up -d --build
             - docker-compose logs -f
+    proto:
+        aliases:
+            - gen
+        desc: "Regenerate the gRPC contract"
+        dir: api
+        cmds:
+            - protoc -I sso/v1 sso.proto --go_out=sso/v1 --go_opt=paths=source_relative --go-grpc_out=sso/v1 --go-grpc_opt=paths=source_relative

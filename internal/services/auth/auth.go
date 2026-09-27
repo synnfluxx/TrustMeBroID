@@ -117,9 +117,6 @@ func (a *Auth) MakeAdmin(ctx context.Context, userID, appID int64) (uid int64, e
 		slog.Int64(logger.KeyAppID, appID),
 	)
 
-	// Privilege grants are audit events: they are rare, they are irreversible
-	// from the user's side, and someone will eventually need to answer "who
-	// made this account an admin, and when".
 	log.Info("granting admin privileges")
 
 	uid, err = a.adminProvider.MakeAdmin(ctx, userID, appID)
@@ -146,9 +143,6 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	const op = "auth.Login"
 	start := time.Now()
 
-	// identifier_type tells us which login form users actually use, and keeps
-	// the three lookup branches distinguishable in the log without printing the
-	// identifier itself at every step.
 	log := logger.Op(ctx, a.log, op).With(
 		slog.Int64(logger.KeyAppID, appID),
 		slog.String("identifier_type", identifierType(identifier)),
@@ -163,9 +157,6 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	log = log.With(slog.Int64(logger.KeyUserID, user.ID))
 
 	if err := a.pwVerifier.Compare(user.PassHash, []byte(password)); err != nil {
-		// A wrong password is an ordinary event, not an operational fault, so
-		// it stays at warn and never pages anyone. It is logged at all because
-		// a burst of these from one peer is how credential stuffing looks.
 		log.Warn("login rejected: password mismatch",
 			slog.String("reason", "bad_password"),
 			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
@@ -174,9 +165,6 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	}
 
 	if !user.IsVerified {
-		// Distinct from a bad password: this user knows their credentials and
-		// is blocked by the verification flow. If this reason dominates the
-		// rejections, email delivery is broken, not the users.
 		log.Warn("login rejected: email not verified",
 			slog.String("reason", "email_not_verified"),
 			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
@@ -201,9 +189,6 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	}
 
 	if err := a.jwtProvider.SaveRefreshToken(ctx, refreshToken, user.ID, app.ID, a.RefreshTokenTTL); err != nil {
-		// The tokens exist but the refresh token was never persisted, so the
-		// session dies at the first refresh. Saying so here saves debugging a
-		// "users are randomly logged out" report later.
 		log.Error("login failed: refresh token not persisted",
 			slog.String("impact", "the session would end at the first refresh"),
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
@@ -221,9 +206,7 @@ func (a *Auth) Login(ctx context.Context, identifier models.UserIdentifier, pass
 	return accessToken, refreshToken, nil
 }
 
-// lookupUser resolves whichever identifier the caller supplied. The three
-// branches were previously copy-pasted with identical error handling; folding
-// them together means a lookup failure is reported one way instead of three.
+// lookupUser resolves whichever identifier the caller supplied.
 func (a *Auth) lookupUser(ctx context.Context, log *slog.Logger, identifier models.UserIdentifier, appID int64) (models.User, error) {
 	const op = "auth.Login"
 
@@ -258,8 +241,6 @@ func (a *Auth) lookupUser(ctx context.Context, log *slog.Logger, identifier mode
 		return models.User{}, fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
 
 	case errors.Is(err, storage.ErrUserDeleted):
-		// Same response to the caller as "not found", but a different cause:
-		// worth separating so support can tell a deleted account from a typo.
 		log.Warn("login rejected: account is soft-deleted",
 			slog.String("reason", "user_deleted"),
 			slog.String(logger.KeyOutcome, logger.OutcomeRejected))
@@ -312,10 +293,6 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		sl.Email(email),
 		sl.Username(username),
 	)
-	// The removed line here logged the plaintext password, the address and the
-	// username at debug level. Debug is the default level outside production,
-	// so every developer's terminal and every dev container's log collector
-	// received real credentials. Nothing in this function logs `pass`.
 	log.Info("registering user")
 
 	app, err := a.appProvider.App(ctx, appID)
@@ -340,8 +317,6 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 	// bcrypt is the slowest step in registration by an order of magnitude.
-	// Tracking it separately keeps a slow registration from being blamed on
-	// the database.
 	log.Debug("password hashed",
 		slog.Int("bcrypt_cost", bcrypt.DefaultCost), sl.Dur(time.Since(hashStart)))
 
@@ -371,9 +346,6 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 		sl.Token("verification", verificationToken))
 
 	if err := a.EmailService.SendVerificationEmail(email, verificationToken, app.RedirectURI); err != nil {
-		// The account exists but the user was never told how to activate it,
-		// and the caller will see a failed registration. Both halves of that
-		// state are recorded so the account can be found and the mail resent.
 		log.Error("registration incomplete: verification email was not sent",
 			slog.Int64("orphaned_user_id", id),
 			slog.String("impact", "account exists but cannot be verified or logged into"),
@@ -444,10 +416,7 @@ func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
 	data, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
 	if err != nil {
 		if errors.Is(err, storage.ErrTokenNotFound) {
-			// Expected whenever a token has expired, been rotated or been
-			// revoked. It is the normal end of a session, so it is a warn and
-			// not an error, but it is recorded: a spike here means sessions
-			// are dying earlier than the configured TTL.
+			// Expected whenever a token has expired, been rotated or been revoked.
 			log.Warn("refresh rejected: token not found in store",
 				slog.String("reason", "token_not_found"),
 				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
@@ -486,8 +455,6 @@ func (a *Auth) RefreshToken(ctx context.Context, token string) (string, error) {
 		return "", err
 	}
 
-	// Refresh runs on every client every few minutes, so the success path stays
-	// at debug: the gRPC access log already records that the call happened.
 	log.Debug("access token reissued",
 		slog.Duration("access_ttl", a.AccessTokenTTL),
 		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),
@@ -570,9 +537,7 @@ func (a *Auth) DeleteAdmin(ctx context.Context, identifier models.UserIdentifier
 
 func (a *Auth) RegisterApp(ctx context.Context, appName, redirectURI string) (appID int64, secret string, err error) {
 	const op = "auth.RegisterApp"
-	// Registering an application mints a signing key for a whole tenant. It is
-	// an administrative, audit-worthy event, so it is logged in full — minus
-	// the secret, which is what the whole thing protects.
+	// Registering an application mints a signing key for a whole tenant.
 	log := logger.Op(ctx, a.log, op).With(
 		slog.String("app_name", appName),
 		slog.String("redirect_uri", redirectURI),
@@ -606,9 +571,6 @@ func (a *Auth) RegisterApp(ctx context.Context, appName, redirectURI string) (ap
 			return 0, "", ErrAppExists
 		}
 
-		// The original code mapped every storage failure to
-		// ErrInvalidCredentials, so a database outage surfaced as a credential
-		// problem. The log now records what actually happened.
 		log.Error("app registration failed: storage error",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, "", ErrInvalidCredentials
@@ -650,8 +612,6 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 	start := time.Now()
 	log := logger.Op(ctx, a.log, op).With(sl.Token("old_refresh", token))
 
-	// Every branch below used to log the word "error" and nothing else, which
-	// told an operator that rotation failed but not at which of the four steps.
 	fields, err := a.jwtProvider.GetRefreshTokenFields(ctx, token)
 	if err != nil {
 		if errors.Is(err, storage.ErrTokenNotFound) {
@@ -690,8 +650,6 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 	}
 
 	if err := a.jwtProvider.SetNewRefreshToken(ctx, token, refreshToken, a.RefreshTokenTTL); err != nil {
-		// The client is about to be handed a token the store does not know, so
-		// its next refresh will fail and the user will be signed out.
 		log.Error("rotation failed: the new token was not persisted",
 			slog.String("impact", "client would receive a token the store does not know"),
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
@@ -736,9 +694,7 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 
 	log = log.With(slog.Int64(logger.KeyUserID, usr.ID))
 
-	// The code is checked before anything else, including the already-verified
-	// shortcut. This call now hands back a session, so a path that skipped the
-	// check would let anyone who knows a registered address obtain one.
+	// The code is checked before anything else, including the already-verified shortcut.
 	if usr.LastTokenGeneratedTime.Valid {
 		age := time.Since(usr.LastTokenGeneratedTime.Time)
 		if age > verificationTokenTTL {
@@ -766,8 +722,7 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 	}
 
 	if usr.IsVerified {
-		// Users click the link twice. The code was still checked above, so
-		// issuing a session here is safe and keeps the flow idempotent.
+		// Users click the link twice.
 		log.Info("account was already verified, issuing a session anyway",
 			slog.String("reason", "already_verified"))
 	} else if err := a.usrProvider.VerifyUser(ctx, email, appID); err != nil {
@@ -778,8 +733,7 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 
 	accessToken, refreshToken, err := a.issueSession(ctx, log, usr.ID, appID)
 	if err != nil {
-		// The address is confirmed either way; only the session failed. The
-		// caller can still log in with the password.
+		// The address is confirmed either way; only the session failed.
 		log.Error("account verified but the session could not be issued",
 			slog.String("impact", "the address is confirmed; the user must log in manually"),
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
@@ -795,9 +749,7 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 	return accessToken, refreshToken, nil
 }
 
-// issueSession mints and persists a token pair for a user whose identity has
-// just been established. Shared by Login and by email verification so both
-// paths produce sessions with identical lifetimes and storage.
+// issueSession mints and persists a token pair for a user whose identity has just been established.
 func (a *Auth) issueSession(ctx context.Context, log *slog.Logger, userID, appID int64) (string, string, error) {
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
@@ -832,9 +784,7 @@ func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, a
 	usr, err := a.usrProvider.UserByEmail(ctx, email, appID)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
-			// This endpoint takes an arbitrary address, so it doubles as an
-			// account-existence probe. Repeated misses from one source are the
-			// signature of enumeration and need to be visible.
+			// This endpoint takes an arbitrary address, so it doubles as an account-existence probe.
 			log.Warn("resend rejected: no account for this address",
 				slog.String("reason", "user_not_found"),
 				slog.String(logger.KeyOutcome, logger.OutcomeRejected))
@@ -880,8 +830,6 @@ func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, a
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	// Ordering matters for diagnosis: past this point the previous token is
-	// already dead, so a send failure leaves the user with no working link.
 	log.Debug("verification token rotated, previous token is now invalid",
 		sl.Token("new_verification", newVerificationToken))
 

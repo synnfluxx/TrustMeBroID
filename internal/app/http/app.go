@@ -27,10 +27,7 @@ import (
 // visitorTTL is how long an idle client keeps its rate-limit bucket.
 const visitorTTL = 3 * time.Hour
 
-// sensitiveParams never appear in an access log. The OAuth callback carries the
-// authorization code and the CSRF state in the query string, and the previous
-// implementation logged r.RequestURI verbatim — which wrote live authorization
-// codes into the log stream on every callback.
+// sensitiveParams never appear in an access log.
 var sensitiveParams = map[string]struct{}{
 	"code":               {},
 	"state":              {},
@@ -82,11 +79,8 @@ func NewHTTPApp(storage oauth.Storage, log *slog.Logger, db oauth.TokenProvider,
 
 	app.configureRouter()
 	app.srv = &http.Server{
-		Addr:    bindAddr,
-		Handler: app,
-		// Route net/http's own errors (bad TLS handshakes, malformed requests)
-		// into the structured stream instead of the default stderr logger,
-		// which bypassed slog entirely and produced unparseable lines.
+		Addr:     bindAddr,
+		Handler:  app,
 		ErrorLog: slog.NewLogLogger(log.With(slog.String("component", "net/http")).Handler(), slog.LevelWarn),
 	}
 	app.cleanerCancel = app.VisitorsCleaner(context.Background(), cleanerDelay)
@@ -102,9 +96,7 @@ func (a *App) configureRouter() {
 	a.router.HandleFunc("/auth/github/callback", a.oAuthServer.CallbackHandler())
 }
 
-// recoverPanic keeps one bad request from taking down the listener and records
-// the stack with the request already correlated. net/http's built-in recovery
-// drops the connection and logs to its own writer, which never reached slog.
+// recoverPanic keeps one bad request from taking down the listener and records the stack with the request already correlated.
 func (a *App) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -128,8 +120,7 @@ func (a *App) recoverPanic(next http.Handler) http.Handler {
 	})
 }
 
-// setRequestID adopts an upstream correlation id when the proxy supplies one,
-// so a request can be followed from Caddy through SSO without a second lookup.
+// setRequestID adopts an upstream correlation id when the proxy supplies one, so a request can be followed from Caddy through SSO without a second lookup.
 func (a *App) setRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -144,10 +135,6 @@ func (a *App) setRequestID(next http.Handler) http.Handler {
 }
 
 // logRequest writes one access record per request.
-//
-// The level is chosen from the status: client mistakes stay at info, 4xx that
-// indicate a broken flow are warnings, and only 5xx are errors. That keeps an
-// error-level alert meaningful.
 func (a *App) logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -183,8 +170,7 @@ func (a *App) logRequest(next http.Handler) http.Handler {
 	})
 }
 
-// redactQuery keeps the shape of the query string — which parameters were
-// present — while removing the values that must not be retained.
+// redactQuery keeps the shape of the query string — which parameters were present — while removing the values that must not be retained.
 func redactQuery(u *url.URL) string {
 	if u.RawQuery == "" {
 		return ""
@@ -230,9 +216,6 @@ func (a *App) VisitorsCleaner(pctx context.Context, cleanerDelay time.Duration) 
 				after := len(a.visitors)
 				a.mu.Unlock()
 
-				// Tracked at info because this map is keyed by a client-supplied
-				// address: unbounded growth here is a memory-exhaustion vector,
-				// and the only warning is this number trending upwards.
 				log.Info("rate-limit buckets swept",
 					slog.Int("before", before),
 					slog.Int("after", after),
@@ -265,11 +248,6 @@ func (a *App) getVisitor(ip string) *Visitor {
 }
 
 // clientIP identifies the caller for rate limiting.
-//
-// reqip only reads forwarding headers; it returns "" when a client connects
-// directly, which is reachable here because the HTTP port is published on all
-// interfaces. Without the fallback every direct client shares a single bucket
-// keyed by the empty string, so one of them can throttle all the others.
 func clientIP(r *http.Request) string {
 	if ip := reqip.GetClientIP(r); ip != "" {
 		return ip
@@ -300,10 +278,6 @@ func (a *App) limit(next http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.String("client_ip", ip),
 				slog.String("remote_addr", r.RemoteAddr),
-				// The bucket key comes from X-Forwarded-For when present, so it
-				// is only as trustworthy as the proxy in front. Recording both
-				// makes a spoofing attempt visible: the same remote_addr
-				// arriving under many client_ip values.
 				slog.String("ip_source", "x-forwarded-for or remote addr"),
 				slog.Float64("limit_rps", float64(a.rps)),
 				slog.Int("burst", a.burst),

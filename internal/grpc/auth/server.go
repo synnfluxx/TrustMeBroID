@@ -9,10 +9,10 @@ import (
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
-	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -369,9 +369,6 @@ func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailR
 
 	accessToken, refreshToken, err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationToken(), req.GetAppId())
 	if err != nil {
-		// Each of these used to collapse into Internal, because the handler
-		// matched storage.ErrUserNotFound while the service returns its own
-		// sentinels. The caller could not tell a mistyped code from an outage.
 		switch {
 		case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, storage.ErrUserNotFound):
 			return nil, status.Error(codes.NotFound, "user not found")

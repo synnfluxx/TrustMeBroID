@@ -42,8 +42,6 @@ func (s *Server) LoginHandler() http.HandlerFunc {
 				s.respondError(w, http.StatusBadRequest, "invalid app_id")
 				return
 			}
-			// Previously execution fell through this block on any other error
-			// and redirected the browser to an empty URL.
 			logger.From(r.Context(), s.log).Error("oauth login failed",
 				slog.Int("app_id", aid),
 				slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
@@ -63,9 +61,6 @@ func (s *Server) CallbackHandler() http.HandlerFunc {
 
 		appID, err := s.getAndValidateState(r)
 		if err != nil {
-			// A state mismatch is the signature of a CSRF attempt or of a stale
-			// tab, so the rejection is recorded rather than silently answered
-			// with a 400.
 			log.Warn("oauth callback rejected: state validation failed",
 				slog.String("reason", "state_mismatch"),
 				slog.String("client_ip", r.RemoteAddr),
@@ -84,8 +79,6 @@ func (s *Server) CallbackHandler() http.HandlerFunc {
 			return
 		}
 
-		// The redirect carries the access token in the query string, so the
-		// target is logged but the built URL never is.
 		log.Info("oauth callback completed, redirecting client",
 			slog.String("redirect_host", redirectHost(uri)),
 			slog.String(logger.KeyOutcome, logger.OutcomeSuccess))
@@ -97,10 +90,6 @@ func (s *Server) CallbackHandler() http.HandlerFunc {
 }
 
 func (s *Server) getAndValidateState(r *http.Request) (int64, error) {
-	// Every failure below used to return the `err` from r.Cookie, which is nil
-	// once the cookie has been read successfully. The caller checks
-	// `if err != nil`, so a state mismatch returned (appID, nil) and the
-	// callback proceeded: the CSRF check never rejected anything.
 	oauthState, err := r.Cookie("oauth_state")
 	if err != nil {
 		return 0, fmt.Errorf("oauth_state cookie is missing: %w", err)
@@ -153,8 +142,7 @@ func (s *Server) setRefershToken(w http.ResponseWriter, token string) {
 	http.SetCookie(w, cookie)
 }
 
-// redirectHost reduces a redirect target to its host, so the log shows where a
-// user was sent without retaining the token carried in the query string.
+// redirectHost reduces a redirect target to its host, so the log shows where a user was sent without retaining the token carried in the query string.
 func redirectHost(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {

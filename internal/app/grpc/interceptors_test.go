@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	discardHandler "github.com/synnfluxx/TrustMeBroID/internal/lib/logger/handlers/discardHandler"
-	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

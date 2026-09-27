@@ -1,9 +1,4 @@
 // Package sl builds slog attributes for values that recur across the service.
-//
-// The helpers that touch user data deliberately return a reduced form. An
-// operator needs to correlate records and recognise an account in a support
-// request; they do not need the raw address or the raw token, and production
-// logs are copied into places with weaker access control than the database.
 package sl
 
 import (
@@ -16,11 +11,7 @@ import (
 	"time"
 )
 
-// Err renders an error for logging. It tolerates a nil error, which the old
-// implementation did not: err.Error() on nil panics inside the logging call.
-//
-// error_type carries the concrete type so that alerting can distinguish a
-// *pq.Error from a context deadline without matching on message text.
+// Err renders an error for logging.
 func Err(err error) slog.Attr {
 	if err == nil {
 		return slog.String("error", "")
@@ -31,8 +22,7 @@ func Err(err error) slog.Attr {
 	)
 }
 
-// ErrWith is Err plus a sentinel classification, for call sites that already
-// know which expected error they matched.
+// ErrWith is Err plus a sentinel classification, for call sites that already know which expected error they matched.
 func ErrWith(err error, sentinel error) slog.Attr {
 	if err == nil {
 		return slog.String("error", "")
@@ -58,9 +48,7 @@ func unwrapAll(err error) error {
 	}
 }
 
-// Email masks the local part and keeps the domain. "daniil@icloud.com" becomes
-// "d****l@icloud.com": enough to recognise an account in a support thread,
-// not enough to harvest addresses out of a log archive.
+// Email masks the local part and keeps the domain.
 func Email(addr string) slog.Attr {
 	return slog.String("email", MaskEmail(addr))
 }
@@ -89,12 +77,10 @@ func maskTail(local string) string {
 	}
 }
 
-// Username is logged in full: it is public within the product and operators
-// need it to act on a report.
+// Username is logged in full: it is public within the product and operators need it to act on a report.
 func Username(name string) slog.Attr { return slog.String("username", name) }
 
-// Token replaces a credential with a stable fingerprint. Two records about the
-// same token line up; the token itself cannot be reconstructed from the log.
+// Token replaces a credential with a stable fingerprint.
 func Token(key, token string) slog.Attr {
 	return slog.String(key+"_fp", Fingerprint(token))
 }
@@ -108,8 +94,7 @@ func Fingerprint(token string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// Dur reports elapsed time as whole milliseconds under a fixed key, so latency
-// can be aggregated without unit guessing.
+// Dur reports elapsed time as whole milliseconds under a fixed key, so latency can be aggregated without unit guessing.
 func Dur(d time.Duration) slog.Attr {
 	return slog.Int64("duration_ms", d.Milliseconds())
 }
@@ -117,8 +102,7 @@ func Dur(d time.Duration) slog.Attr {
 // Since is Dur measured from start.
 func Since(start time.Time) slog.Attr { return Dur(time.Since(start)) }
 
-// Email2 masks an address under a caller-chosen key, for records that carry
-// more than one address (sender and recipient, for example).
+// Email2 masks an address under a caller-chosen key, for records that carry more than one address (sender and recipient, for example).
 func Email2(key, addr string) slog.Attr {
 	return slog.String(key, MaskEmail(addr))
 }

@@ -64,16 +64,13 @@ func (o *OAuthService) Login(ctx context.Context, appID int64) (state string, ur
 
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Previously ignored. Without entropy the CSRF state is predictable,
-		// which is the whole point of the parameter.
+		// Previously ignored.
 		log.Error("oauth login failed: no entropy for the state parameter",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return "", "", err
 	}
 	state = fmt.Sprintf("%s:%d", hex.EncodeToString(b), appID)
 
-	// The state value is a CSRF token, so it is fingerprinted rather than
-	// printed; the log still lets the login and the callback be paired up.
 	log.Info("oauth authorization started",
 		slog.String("provider", "github"),
 		sl.Token("state", state))
@@ -89,8 +86,7 @@ func (o *OAuthService) Callback(ctx context.Context, code string, appID int64, a
 		slog.String("provider", "github"),
 	)
 
-	// The authorization code is a single-use credential and is never logged,
-	// only its presence.
+	// The authorization code is a single-use credential and is never logged, only its presence.
 	log.Debug("exchanging authorization code", slog.Bool("code_present", code != ""))
 
 	oauthUser, err := o.config.Callback(ctx, code)
@@ -132,8 +128,7 @@ func (o *OAuthService) Callback(ctx context.Context, code string, appID int64, a
 		return "", "", "", err
 	}
 
-	// This path issues a session without checking IsVerified, unlike password
-	// login. Recording it makes the difference auditable rather than implicit.
+	// This path issues a session without checking IsVerified, unlike password login.
 	log.Info("oauth login succeeded",
 		slog.Bool("account_verified", usr.IsVerified),
 		slog.Bool("email_verification_enforced", false),

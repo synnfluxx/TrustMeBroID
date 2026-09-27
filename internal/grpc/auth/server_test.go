@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
-	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

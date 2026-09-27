@@ -11,9 +11,7 @@ import (
 )
 
 type GithubOAuth struct {
-	config *oauth2.Config
-	// Endpoint URLs are fields rather than literals so the provider flow can be
-	// exercised against a stub server instead of api.github.com.
+	config       *oauth2.Config
 	userAPIURL   string
 	emailsAPIURL string
 }

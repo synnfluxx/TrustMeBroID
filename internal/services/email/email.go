@@ -96,9 +96,6 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 		sl.Email2("smtp_from", e.SMTPConfig.Username),
 	)
 
-	// Config problems here surface from net/smtp as a bare "dial tcp :0:
-	// connect: connection refused", which does not say that the cause is an
-	// empty config block. Name it up front instead.
 	if e.SMTPConfig.Host == "" || e.SMTPConfig.Port == 0 {
 		err := fmt.Errorf("smtp is not configured: host=%q port=%d", e.SMTPConfig.Host, e.SMTPConfig.Port)
 		log.Error("cannot send verification email: smtp is not configured",
@@ -107,8 +104,7 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 		return err
 	}
 	if URL == "" {
-		// An empty base makes the link relative, so it is unclickable in every
-		// mail client. Silent until a user complains; loud here.
+		// An empty base makes the link relative, so it is unclickable in every mail client.
 		log.Error("verification link has an empty base url",
 			slog.String("impact", "the link in the email will be relative and unusable"),
 			slog.String("remedy", "check the redirect_uri registered for this application"))
@@ -157,9 +153,7 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 	auth := smtp.PlainAuth("", e.SMTPConfig.Username, e.SMTPConfig.Password, e.SMTPConfig.Host)
 
 	if err := smtp.SendMail(addr, auth, e.SMTPConfig.Username, []string{to}, msg.Bytes()); err != nil {
-		// net/smtp errors are terse and the usual causes are configuration,
-		// not code. Attaching the likely cause turns a five-minute guess into
-		// a one-line read.
+		// net/smtp errors are terse and the usual causes are configuration, not code.
 		log.Error("verification email was not delivered to the smtp server",
 			slog.String("likely_cause", smtpFailureHint(e.SMTPConfig.Port, err)),
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
@@ -167,8 +161,7 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 		return err
 	}
 
-	// Handover to the relay only. Whether the mailbox accepted it is not
-	// observable from here, and the message must not imply otherwise.
+	// Handover to the relay only.
 	log.Info("verification email handed to the smtp server",
 		sl.Token("verification", verificationToken),
 		slog.String(logger.KeyOutcome, logger.OutcomeSuccess),

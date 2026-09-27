@@ -1,10 +1,4 @@
-// Package logger builds the process-wide structured logger and carries a
-// request-scoped logger through context.
-//
-// Production emits JSON on stdout so the container runtime can ship it to a
-// log collector without reparsing. Local and dev emit the human-readable
-// pretty format. An unrecognised environment never disables logging: it falls
-// back to JSON at info level and says so on the first line.
+// Package logger builds the process-wide structured logger and carries a request-scoped logger through context.
 package logger
 
 import (
@@ -22,9 +16,7 @@ const (
 	EnvProd  = "prod"
 )
 
-// RequestIDHeader is the HTTP header and the gRPC metadata key that carries the
-// correlation id between AuraLift and SSO. Metadata keys are lower-cased by
-// gRPC, so the same constant works for both transports.
+// RequestIDHeader is the HTTP header and the gRPC metadata key that carries the correlation id between AuraLift and SSO.
 const RequestIDHeader = "x-request-id"
 
 // Keys used on every record so queries stay uniform across both services.
@@ -41,18 +33,14 @@ const (
 	KeyOutcome   = "outcome"
 )
 
-// Outcome values. Every operation that can fail for an expected reason reports
-// one of these, so dashboards can separate "user typed a wrong password" from
-// "the database is down" without parsing messages.
+// Outcome values.
 const (
 	OutcomeSuccess  = "success"
 	OutcomeRejected = "rejected" // caller's fault: bad input, wrong credentials
 	OutcomeFailed   = "failed"   // our fault: dependency error, bug
 )
 
-// redactedKeys never reach the output, whatever a call site passes. This is a
-// safety net behind the call sites, not a substitute for them: values that must
-// not be logged should not be passed to the logger in the first place.
+// redactedKeys never reach the output, whatever a call site passes.
 var redactedKeys = map[string]struct{}{
 	"password":           {},
 	"pass":               {},
@@ -79,8 +67,7 @@ const redactedValue = "[REDACTED]"
 // levelVar lets SetLevel change verbosity for the whole process at runtime.
 var levelVar = new(slog.LevelVar)
 
-// Setup returns the root logger for the process. service is stamped on every
-// record so both services can share one log stream.
+// Setup returns the root logger for the process.
 func Setup(env, service string) *slog.Logger {
 	level, levelUnknown := parseLevel(os.Getenv("LOG_LEVEL"), env)
 	levelVar.Set(level)
@@ -88,8 +75,7 @@ func Setup(env, service string) *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level:       levelVar,
 		ReplaceAttr: replaceAttr,
-		// Source costs a caller lookup per record. It pays for itself when a
-		// production error has to be traced back to a line of code.
+		// Source costs a caller lookup per record.
 		AddSource: true,
 	}
 
@@ -161,8 +147,6 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 		return slog.String(a.Key, redactedValue)
 	}
 
-	// Shorten the source path: the repository-relative tail is enough to find
-	// the line, and the build machine's absolute path is noise.
 	if a.Key == slog.SourceKey {
 		if src, ok := a.Value.Any().(*slog.Source); ok && src != nil {
 			src.File = trimSourcePath(src.File)
@@ -184,8 +168,7 @@ type loggerCtxKey struct{}
 
 type requestIDCtxKey struct{}
 
-// Into stores a request-scoped logger so downstream layers inherit the
-// correlation id without threading a logger through every signature.
+// Into stores a request-scoped logger so downstream layers inherit the correlation id without threading a logger through every signature.
 func Into(ctx context.Context, log *slog.Logger) context.Context {
 	if log == nil {
 		return ctx
@@ -193,8 +176,7 @@ func Into(ctx context.Context, log *slog.Logger) context.Context {
 	return context.WithValue(ctx, loggerCtxKey{}, log)
 }
 
-// From returns the request-scoped logger, or fallback when the context carries
-// none (background jobs, tests, direct service calls).
+// From returns the request-scoped logger, or fallback when the context carries none (background jobs, tests, direct service calls).
 func From(ctx context.Context, fallback *slog.Logger) *slog.Logger {
 	if ctx != nil {
 		if log, ok := ctx.Value(loggerCtxKey{}).(*slog.Logger); ok && log != nil {
@@ -207,8 +189,7 @@ func From(ctx context.Context, fallback *slog.Logger) *slog.Logger {
 	return slog.Default()
 }
 
-// Op returns the request-scoped logger tagged with the operation name. Every
-// service method starts with this so each record says where it came from.
+// Op returns the request-scoped logger tagged with the operation name.
 func Op(ctx context.Context, fallback *slog.Logger, op string) *slog.Logger {
 	return From(ctx, fallback).With(slog.String(KeyOp, op))
 }

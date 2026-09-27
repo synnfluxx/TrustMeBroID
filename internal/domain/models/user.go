@@ -5,12 +5,12 @@ import (
 )
 
 type User struct {
-	ID        int64
-	Email     string
-	Username  string
-	PassHash  []byte
-	DeletedAt sql.NullTime
-	IsVerified bool
-	VerificationCode string
+	ID                     int64
+	Email                  string
+	Username               string
+	PassHash               []byte
+	DeletedAt              sql.NullTime
+	IsVerified             bool
+	VerificationCode       string
 	LastTokenGeneratedTime sql.NullTime
 }

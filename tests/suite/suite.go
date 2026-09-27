@@ -12,8 +12,8 @@ import (
 
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/joho/godotenv"
-	"github.com/synnfluxx/TrustMeBroID/internal/config"
 	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
+	"github.com/synnfluxx/TrustMeBroID/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -33,6 +33,13 @@ type Suite struct {
 
 func New(t *testing.T) (context.Context, *Suite) {
 	t.Helper()
+
+	// These talk to a running SSO instance, so they are opt-in: `SSO_E2E=1 go test ./tests/...`
+	// after `make up`. Plain `go test ./...` skips them.
+	if os.Getenv("SSO_E2E") == "" {
+		t.Skip("set SSO_E2E=1 to run against a running server")
+	}
+
 	t.Parallel()
 
 	_ = godotenv.Load("../.env", ".env")

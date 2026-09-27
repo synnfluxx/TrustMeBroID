@@ -29,10 +29,7 @@ type App struct {
 }
 
 func New(log *slog.Logger, authService authgrpc.Auth, port int, cancel context.CancelFunc, rps, burst int, env string) *App {
-	// Outermost first. Recovery wraps everything so a panic anywhere still
-	// produces a log record; the request id is established next so every record
-	// after it is correlated; the access log sits outside the limiter and the
-	// admin guard so their rejections are recorded too.
+	// Outermost first.
 	server := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			RecoveryInterceptor(log),
@@ -45,9 +42,7 @@ func New(log *slog.Logger, authService authgrpc.Auth, port int, cancel context.C
 
 	authgrpc.Register(server, authService)
 
-	// Reflection lets any client enumerate the whole API. That is a debugging
-	// convenience in development and an information leak on a port that is
-	// published to the internet, so it is gated on the environment.
+	// Reflection lets any client enumerate the whole API.
 	if env != logger.EnvProd {
 		reflection.Register(server)
 		log.Info("grpc reflection enabled", slog.String("env", env))
