@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A pull request may cancel its own earlier run; a deploy may never be cancelled
+# half-way, so that job declares its own group below.
+concurrency:
+  group: sso-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: synnfluxx/trustmebroid
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A replace pointing outside the repository compiles on a laptop and
+      # fails in the image build, because the target is not in the context.
+      # "=> ./api" is fine and expected; "=> ../anything" is not.
+      - name: No replace outside the repository
+        run: |
+          if grep -nE '^replace .*=>[[:space:]]*\.\.' go.mod api/go.mod; then
+            echo "::error::go.mod replaces a module with a path outside the build context"
+            exit 1
+          fi
+
+      - name: Formatting
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^api/sso/v1/.*\.pb\.go$' || true)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -w these files:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Generated code is up to date
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          cd api && protoc -I sso/v1 sso.proto \
+            --go_out=sso/v1 --go_opt=paths=source_relative \
+            --go-grpc_out=sso/v1 --go-grpc_opt=paths=source_relative
+          if ! git diff --exit-code -- api/sso/v1; then
+            echo "::error::sso.proto changed without regenerating; run: cd api && task gen"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./... && (cd api && go vet ./...)
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      # SSO_REQUIRE_DOCKER turns "skipped, no container runtime" into a
+      # failure. Without it the storage tests pass by doing nothing, which is
+      # how a column named verify_token in the schema and verification_code in
+      # every query reached a running environment.
+      - name: Tests
+        env:
+          SSO_REQUIRE_DOCKER: "1"
+        run: go test -race -count=1 ./...
+
+  build:
+    name: Build and publish
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # sha comes first so it is the value of steps.meta.outputs.version,
+          # which is what the deploy pins. latest stays for convenience only.
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auralift-production
+      cancel-in-progress: false
+    steps:
+      # A plain ssh call rather than an action: the key on the server is pinned
+      # to a forced command, so this is a request to deploy and cannot become
+      # anything else. The host key is pinned too.
+      - name: Deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          install -d -m700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY"  > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "deploy sso ${{ needs.build.outputs.tag }}"

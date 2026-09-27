@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
-	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

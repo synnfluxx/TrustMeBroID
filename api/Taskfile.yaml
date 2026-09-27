@@ -1,0 +1,16 @@
+version: '3'
+
+tasks:
+  generate:
+    aliases: [gen]
+    desc: 'Regenerate the Go code from sso.proto'
+    cmds:
+      - protoc -I sso/v1 sso.proto
+          --go_out=sso/v1 --go_opt=paths=source_relative
+          --go-grpc_out=sso/v1 --go-grpc_opt=paths=source_relative
+
+  verify:
+    desc: 'Fail if the committed code differs from a fresh generation'
+    cmds:
+      - task: generate
+      - git diff --exit-code -- sso/v1

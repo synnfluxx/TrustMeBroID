@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/synnfluxx/TrustMeBroID/internal/services/auth"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
-	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/synnfluxx/TrustMeBroID/tests/suite"
-	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 )
 
 const (

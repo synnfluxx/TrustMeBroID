@@ -13,7 +13,7 @@ import (
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/joho/godotenv"
 	"github.com/synnfluxx/TrustMeBroID/internal/config"
-	ssov1 "gitlab.com/synnfluxx/protos/sso/gen"
+	ssov1 "github.com/synnfluxx/TrustMeBroID/api/sso/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"

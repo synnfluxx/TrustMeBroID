@@ -18,9 +18,9 @@ require (
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
+	github.com/synnfluxx/TrustMeBroID/api v0.0.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	gitlab.com/synnfluxx/protos v0.0.0-20260924115023-beed479cb950
 	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
@@ -94,3 +94,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	olympos.io/encoding/edn v0.0.0-20201019073823-d3554ca0b0a3 // indirect
 )
+
+// The contract lives in this repository, so the server always builds against
+// the version it implements. The path is inside the repo, which means it is
+// also inside the Docker build context — unlike a replace pointing outside,
+// which compiles locally and fails in CI.
+replace github.com/synnfluxx/TrustMeBroID/api => ./api

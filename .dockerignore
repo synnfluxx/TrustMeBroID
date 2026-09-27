@@ -1,8 +1,11 @@
 .git
-AUTHORS.md
-CONTRIBUTING.md
-LICENSE
-Taskfile.yaml
-.git*
+.github
 .idea
 .vscode
+.gocache
+bin/
+tests/
+*.md
+.env
+.env.*
+!.env.example

@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package auth;
+
+option go_package = "github.com/synnfluxx/TrustMeBroID/api/sso/v1;ssov1";
+
+service Auth {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc IsAdmin(IsAdminRequest) returns (IsAdminResponse);
+  rpc RegisterApp(RegisterAppRequest) returns (RegisterAppResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (Empty);
+  rpc DeleteAdmin(DeleteAdminRequest) returns (Empty);
+  rpc DeleteApp(DeleteAppRequest) returns (Empty);
+  rpc RefreshAccessToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc UpdateRefreshToken(UpdateRefreshTokenRequst) returns (UpdateRefreshTokenResponse);
+  rpc MakeAdmin(MakeAdminRequest) returns (MakeAdminResponse);
+  rpc Logout(LogoutRequest) returns (Empty);
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+  rpc GenerateNewVerificationToken(GenerateNewVerificationTokenRequest) returns (Empty);
+}
+
+message RegisterRequest {
+  string email = 1;
+  string username = 2;
+  string password = 3;
+  int64 app_id = 4;
+}
+
+message RegisterResponse {
+  int64 user_id = 1;
+}
+
+message LoginRequest {
+  oneof identifier {
+    string email = 1;
+    string username = 2;
+  }
+  string password = 3;
+  int64 app_id = 4;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+}
+
+message IsAdminRequest {
+  int64 user_id = 1;
+  int64 app_id = 2;
+}
+
+message IsAdminResponse {
+  bool is_admin = 1;
+}
+
+message RegisterAppRequest {
+  string app_name = 1;
+  string redirect_uri = 2;
+}
+
+message RegisterAppResponse {
+  int64 app_id = 1;
+  string secret = 2;
+}
+
+message DeleteUserRequest {
+  oneof identifier {
+    int64 user_id = 1;
+    string username = 2;
+    string email = 3;
+  }
+  int64 app_id = 4;
+}
+
+message DeleteAdminRequest {
+  oneof identifier {
+    int64 user_id = 1;
+    string username = 2;
+    string email = 3;
+  }
+  int64 app_id = 4;
+}
+
+message DeleteAppRequest {
+  int64 app_id = 1;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string new_token = 1;
+}
+
+message UpdateRefreshTokenRequst {
+  string refresh_token = 1;
+}
+
+message UpdateRefreshTokenResponse {
+  string refresh_token = 1;
+}
+
+message MakeAdminRequest {
+  int64 user_id = 1;
+  int64 app_id = 2;
+}
+
+message MakeAdminResponse {
+  int64 user_id = 1;
+}
+
+message LogoutRequest {
+    string refresh_token = 1;
+}
+
+message VerifyEmailRequest {
+  string email = 1;
+  string verification_token = 2;
+  int64 app_id = 3;
+}
+
+// Confirming an address proves ownership of the account, so the response
+// carries a session: the caller does not need the password a second time.
+message VerifyEmailResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+}
+
+message GenerateNewVerificationTokenRequest {
+  string email = 1;
+  int64 app_id = 2;
+}
+
+message Empty {}
