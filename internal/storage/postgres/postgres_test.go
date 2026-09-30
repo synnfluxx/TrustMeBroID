@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	_ "github.com/lib/pq"
@@ -70,6 +71,11 @@ func createPostgresDB(t *testing.T) *sql.DB {
 
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
+
+	// The container publishes on IPv4 only, and on hosts where localhost
+	// resolves to ::1 first the connection is reset instead of refused, so it
+	// is not even retried as another address.
+	connStr = strings.Replace(connStr, "@localhost:", "@127.0.0.1:", 1)
 
 	db, err := sql.Open("postgres", connStr)
 	require.NoError(t, err)

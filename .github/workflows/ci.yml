@@ -68,7 +68,7 @@ jobs:
       contents: read
       packages: write
     outputs:
-      tag: ${{ steps.meta.outputs.version }}
+      tag: sha-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +84,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # sha comes first so it is the value of steps.meta.outputs.version,
+          # Both tags are published; the deploy pins the sha one.
           tags: |
             type=sha,format=long
             type=raw,value=latest
