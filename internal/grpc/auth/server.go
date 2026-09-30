@@ -354,7 +354,7 @@ func (s *serverAPI) RefreshAccessToken(ctx context.Context, req *ssov1.RefreshTo
 	}, nil
 }
 
-func (s *serverAPI) VerifyUserEmail(ctx context.Context, req *ssov1.VerifyEmailRequest) (*ssov1.VerifyEmailResponse, error) {
+func (s *serverAPI) VerifyEmail(ctx context.Context, req *ssov1.VerifyEmailRequest) (*ssov1.VerifyEmailResponse, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}

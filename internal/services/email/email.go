@@ -150,7 +150,10 @@ func (e *EmailService) SendVerificationEmail(to, verificationToken, URL string) 
 		slog.String("link_base", URL),
 		slog.Int("message_bytes", msg.Len()))
 
-	auth := smtp.PlainAuth("", e.SMTPConfig.Username, e.SMTPConfig.Password, e.SMTPConfig.Host)
+	var auth smtp.Auth
+	if !e.SMTPConfig.NoAuth {
+		auth = smtp.PlainAuth("", e.SMTPConfig.Username, e.SMTPConfig.Password, e.SMTPConfig.Host)
+	}
 
 	if err := smtp.SendMail(addr, auth, e.SMTPConfig.Username, []string{to}, msg.Bytes()); err != nil {
 		// net/smtp errors are terse and the usual causes are configuration, not code.

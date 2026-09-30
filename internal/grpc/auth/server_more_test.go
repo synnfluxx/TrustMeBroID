@@ -342,7 +342,7 @@ func TestVerifyUserEmail(t *testing.T) {
 		m.On("VerifyUserEmail", mock.Anything, "user@example.com", "code", int64(1)).
 			Return("access-token", "refresh-token", nil)
 
-		resp, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
+		resp, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{
 			Email: "user@example.com", VerificationToken: "code", AppId: 1,
 		})
 
@@ -355,7 +355,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("app id is required", func(t *testing.T) {
 		api, _ := newAPI()
 
-		_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{Email: "a@b.c"})
+		_, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{Email: "a@b.c"})
 
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
@@ -363,7 +363,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("email is required", func(t *testing.T) {
 		api, _ := newAPI()
 
-		_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{AppId: 1})
+		_, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{AppId: 1})
 
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
@@ -387,7 +387,7 @@ func TestVerifyUserEmail(t *testing.T) {
 			m.On("VerifyUserEmail", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 				Return("", "", tc.serviceErr)
 
-			_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
+			_, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{
 				Email: "user@example.com", VerificationToken: "code", AppId: 1,
 			})
 
@@ -398,7 +398,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("verification token is required", func(t *testing.T) {
 		api, m := newAPI()
 
-		_, err := api.VerifyUserEmail(context.Background(), &ssov1.VerifyEmailRequest{
+		_, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{
 			Email: "user@example.com", AppId: 1,
 		})
 

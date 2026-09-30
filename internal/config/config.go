@@ -55,6 +55,9 @@ type SMTPConfig struct {
 	Port     int    `yaml:"port"`
 	Username string `yaml:"-" env:"SMTP_USERNAME" env-required:"true"`
 	Password string `yaml:"-" env:"SMTP_PASSWORD" env-required:"true"`
+	// Local catch-all mailboxes have no TLS, and net/smtp refuses to send
+	// credentials over a plaintext connection. Absent means authenticate.
+	NoAuth bool `yaml:"no_auth"`
 }
 
 func (c *PostgresConfig) mustSetConnectionString() {
