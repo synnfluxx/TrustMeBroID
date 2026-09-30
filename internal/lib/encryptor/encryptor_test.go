@@ -29,7 +29,7 @@ func TestE2E_EncryptDecryptString(t *testing.T) {
 			masterkey:   "12345",
 			data:        "sss",
 			isValid:     false,
-			expectedErr: lenErr,
+			expectedErr: errLen,
 		},
 	}
 
@@ -44,7 +44,7 @@ func TestE2E_EncryptDecryptString(t *testing.T) {
 			} else {
 				s, err := EncryptString([]byte(tc.masterkey), []byte(tc.data))
 				assert.Error(t, err)
-				assert.Equal(t, err, lenErr)
+				assert.Equal(t, err, errLen)
 				assert.Empty(t, s)
 			}
 		})

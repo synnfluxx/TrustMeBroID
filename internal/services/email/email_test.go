@@ -28,7 +28,7 @@ func fakeSMTP(t *testing.T) (port int, received <-chan string) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)

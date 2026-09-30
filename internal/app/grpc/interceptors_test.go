@@ -44,7 +44,7 @@ func TestRecoveryInterceptor_SurvivesNilDereference(t *testing.T) {
 		_, err := interceptor(context.Background(), nil, info("/auth.Auth/Login"),
 			func(context.Context, any) (any, error) {
 				var m map[string]string
-				m["x"] = "y" // assignment to entry in nil map
+				m["x"] = "y" //nolint:staticcheck // deliberate: the interceptor has to survive it
 				return nil, nil
 			})
 		require.Equal(t, codes.Internal, status.Code(err))

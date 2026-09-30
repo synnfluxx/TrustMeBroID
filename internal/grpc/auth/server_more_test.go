@@ -43,7 +43,7 @@ func TestValidate_PasswordPolicy(t *testing.T) {
 				require.NoError(t, err)
 				return
 			}
-			require.ErrorIs(t, err, PassErr)
+			require.ErrorIs(t, err, ErrPassword)
 		})
 	}
 }

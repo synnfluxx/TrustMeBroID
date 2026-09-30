@@ -97,7 +97,7 @@ func MustLoadByPath(path string) *Config {
 
 	cfg.DB.mustSetConnectionString()
 
-	os.Setenv("ENV", cfg.Env)
+	_ = os.Setenv("ENV", cfg.Env)
 
 	cfg.Redis.ConnectionString = os.Getenv("REDIS_CONNECTION_STRING")
 

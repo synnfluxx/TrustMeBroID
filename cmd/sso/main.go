@@ -23,7 +23,7 @@ import (
 const serviceName = "sso"
 
 func init() {
-	godotenv.Load()
+	_ = godotenv.Load()
 }
 
 func main() {
@@ -120,7 +120,7 @@ func runMigrations(log *slog.Logger, dsn string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	before, _ := goose.GetDBVersion(db)
 

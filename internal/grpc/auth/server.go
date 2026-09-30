@@ -24,7 +24,7 @@ const (
 	emptyString = ""
 )
 
-var PassErr = errors.New("password must be at least 8 characters long and include at least one uppercase letter and one number")
+var ErrPassword = errors.New("password must be at least 8 characters long and include at least one uppercase letter and one number")
 
 type Auth interface {
 	Login(ctx context.Context, identifier models.UserIdentifier, password string, appID int64) (accessToken, refreshToken string, err error)
@@ -420,7 +420,7 @@ func validate(email, password string) error {
 		}
 	}
 	if err := validation.Validate(password, validation.Required, validation.Length(8, 32), validation.Match(regexp.MustCompile(`[0-9]`)), validation.Match(regexp.MustCompile(`[A-Z]`))); err != nil {
-		return PassErr
+		return ErrPassword
 	}
 
 	return nil

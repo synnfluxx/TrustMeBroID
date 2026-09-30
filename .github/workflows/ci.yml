@@ -45,9 +45,12 @@ jobs:
       - name: Vet
         run: go vet ./... && (cd api && go vet ./...)
 
-      - uses: golangci/golangci-lint-action@v6
+      # v8 installs the v2 line: v6 pulled a linter built with an older Go than
+      # the module targets, which it refuses to run against. Pinned, so an
+      # upstream release cannot break the deploy path again.
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.14.0
           args: --timeout=5m
 
       # SSO_REQUIRE_DOCKER turns "skipped, no container runtime" into a

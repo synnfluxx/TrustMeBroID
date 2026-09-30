@@ -12,13 +12,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var lenErr = errors.New("masterkey must be 16, 24 or 32 characters")
+var errLen = errors.New("masterkey must be 16, 24 or 32 characters")
 
 func EncryptString(masterkey []byte, data []byte) (string, error) {
 	switch len(masterkey) {
 	case 16, 24, 32:
 	default:
-		return "", lenErr
+		return "", errLen
 	}
 
 	block, err := aes.NewCipher(masterkey)
@@ -45,7 +45,7 @@ func DecryptString(masterkey []byte, encoded string) (string, error) {
 	switch len(masterkey) {
 	case 16, 24, 32:
 	default:
-		return "", lenErr
+		return "", errLen
 	}
 
 	cipherText, err := base64.StdEncoding.DecodeString(encoded)

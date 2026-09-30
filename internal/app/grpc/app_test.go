@@ -55,7 +55,7 @@ func reflectionEnabled(t *testing.T, addr string) bool {
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -91,7 +91,7 @@ func TestRun_FailsWhenThePortIsTaken(t *testing.T) {
 	port := freePort(t)
 	holder, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
 	require.NoError(t, err)
-	defer holder.Close()
+	defer func() { _ = holder.Close() }()
 
 	_, cancel := context.WithCancel(context.Background())
 	app := New(discardHandler.NewDiscardLogger(), nil, port, cancel, 100, 100, logger.EnvLocal)
