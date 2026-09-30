@@ -28,6 +28,9 @@ const (
 // slowQueryThreshold is the point at which a query is reported on its own.
 const slowQueryThreshold = 200 * time.Millisecond
 
+// Shared with the tests so the statement they exercise is the one New prepares.
+const reaperQuery = "DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id"
+
 type Storage struct {
 	db         *sql.DB
 	log        *slog.Logger
@@ -68,7 +71,7 @@ func New(url string, log *slog.Logger) (*Storage, error) {
 			slog.String("expected", "16, 24 or 32 bytes"))
 	}
 
-	stmt, err := db.Prepare("DELETE FROM users WHERE deleted_at IS NOT NULL AND NOW()-INTERVAL '72 hours' >= deleted_at RETURNING id")
+	stmt, err := db.Prepare(reaperQuery)
 	if err != nil {
 		return nil, fmt.Errorf("%s: prepare reaper: %w", op, err)
 	}

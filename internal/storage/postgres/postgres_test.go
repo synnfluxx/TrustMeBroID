@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	_ "github.com/lib/pq"
@@ -60,6 +59,10 @@ func createPostgresDB(t *testing.T) *sql.DB {
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("user"),
 		postgres.WithPassword("pass"),
+		// Postgres logs that it is ready, then restarts itself and logs it
+		// again. Without waiting for the second line the first connection is
+		// made into the restart and is reset.
+		postgres.BasicWaitStrategies(),
 	)
 	require.NoError(t, err)
 
@@ -71,11 +74,6 @@ func createPostgresDB(t *testing.T) *sql.DB {
 
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
-
-	// The container publishes on IPv4 only, and on hosts where localhost
-	// resolves to ::1 first the connection is reset instead of refused, so it
-	// is not even retried as another address.
-	connStr = strings.Replace(connStr, "@localhost:", "@127.0.0.1:", 1)
 
 	db, err := sql.Open("postgres", connStr)
 	require.NoError(t, err)
@@ -113,10 +111,17 @@ func newTestStorage(t *testing.T) (*Storage, context.Context) {
 
 	// masterKey and log are set the way New would set them: App() decrypts the
 	// application secret with the key, and the query tracer logs through it.
+	db := createPostgresDB(t)
+
+	stmt, err := db.Prepare(reaperQuery)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stmt.Close() })
+
 	return &Storage{
-		db:        createPostgresDB(t),
-		log:       discardHandler.NewDiscardLogger(),
-		masterKey: []byte("12345678901234567890123456789012"),
+		db:         db,
+		log:        discardHandler.NewDiscardLogger(),
+		masterKey:  []byte("12345678901234567890123456789012"),
+		reaperStmt: stmt,
 	}, context.Background()
 }
 
@@ -148,10 +153,12 @@ func TestStorage_RegisterApp(t *testing.T) {
 	})
 
 	t.Run("duplicate", func(t *testing.T) {
-		_, err := storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		name, secret, uri := appName+"-dup", appSecret+"-dup", redirectURI+"/dup"
+
+		_, err := storage.RegisterApp(ctx, name, secret, uri)
 		require.NoError(t, err)
 
-		_, err = storage.RegisterApp(ctx, appName, appSecret, redirectURI)
+		_, err = storage.RegisterApp(ctx, name, secret, uri)
 		require.Error(t, err)
 		require.ErrorIs(t, err, strg.ErrAppExists)
 	})
