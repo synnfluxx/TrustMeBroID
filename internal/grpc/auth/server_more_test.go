@@ -343,7 +343,7 @@ func TestVerifyUserEmail(t *testing.T) {
 			Return("access-token", "refresh-token", nil)
 
 		resp, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{
-			Email: "user@example.com", VerificationToken: "code", AppId: 1,
+			Email: "user@example.com", VerificationCode: "code", AppId: 1,
 		})
 
 		require.NoError(t, err)
@@ -376,7 +376,7 @@ func TestVerifyUserEmail(t *testing.T) {
 			want       codes.Code
 		}{
 			{auth.ErrUserNotFound, codes.NotFound},
-			{auth.ErrVerificationTokenExpired, codes.FailedPrecondition},
+			{auth.ErrVerificationCodeExpired, codes.FailedPrecondition},
 			{auth.ErrInvalidCredentials, codes.InvalidArgument},
 			{storage.ErrAppNotFound, codes.NotFound},
 			{errors.New("redis down"), codes.Internal},
@@ -388,7 +388,7 @@ func TestVerifyUserEmail(t *testing.T) {
 				Return("", "", tc.serviceErr)
 
 			_, err := api.VerifyEmail(context.Background(), &ssov1.VerifyEmailRequest{
-				Email: "user@example.com", VerificationToken: "code", AppId: 1,
+				Email: "user@example.com", VerificationCode: "code", AppId: 1,
 			})
 
 			require.Equal(t, tc.want, status.Code(err), "for %v", tc.serviceErr)
@@ -407,13 +407,13 @@ func TestVerifyUserEmail(t *testing.T) {
 	})
 }
 
-func TestGenerateNewVerificationToken(t *testing.T) {
+func TestGenerateNewVerificationCode(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		api, m := newAPI()
-		m.On("GenerateNewVerificationToken", mock.Anything, "user@example.com", int64(1)).Return(nil)
+		m.On("GenerateNewVerificationCode", mock.Anything, "user@example.com", int64(1)).Return(nil)
 
-		_, err := api.GenerateNewVerificationToken(context.Background(),
-			&ssov1.GenerateNewVerificationTokenRequest{Email: "user@example.com", AppId: 1})
+		_, err := api.GenerateNewVerificationCode(context.Background(),
+			&ssov1.GenerateNewVerificationCodeRequest{Email: "user@example.com", AppId: 1})
 
 		require.NoError(t, err)
 	})
@@ -421,22 +421,22 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 	t.Run("required fields", func(t *testing.T) {
 		api, _ := newAPI()
 
-		_, err := api.GenerateNewVerificationToken(context.Background(),
-			&ssov1.GenerateNewVerificationTokenRequest{AppId: 1})
+		_, err := api.GenerateNewVerificationCode(context.Background(),
+			&ssov1.GenerateNewVerificationCodeRequest{AppId: 1})
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 
-		_, err = api.GenerateNewVerificationToken(context.Background(),
-			&ssov1.GenerateNewVerificationTokenRequest{Email: "a@b.c"})
+		_, err = api.GenerateNewVerificationCode(context.Background(),
+			&ssov1.GenerateNewVerificationCodeRequest{Email: "a@b.c"})
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
 
 	t.Run("unknown address is reported as not found", func(t *testing.T) {
 		api, m := newAPI()
-		m.On("GenerateNewVerificationToken", mock.Anything, mock.Anything, mock.Anything).
+		m.On("GenerateNewVerificationCode", mock.Anything, mock.Anything, mock.Anything).
 			Return(auth.ErrUserNotFound)
 
-		_, err := api.GenerateNewVerificationToken(context.Background(),
-			&ssov1.GenerateNewVerificationTokenRequest{Email: "user@example.com", AppId: 1})
+		_, err := api.GenerateNewVerificationCode(context.Background(),
+			&ssov1.GenerateNewVerificationCodeRequest{Email: "user@example.com", AppId: 1})
 
 		require.Equal(t, codes.NotFound, status.Code(err))
 	})

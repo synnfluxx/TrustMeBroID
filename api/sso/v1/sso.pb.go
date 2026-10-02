@@ -1056,12 +1056,12 @@ func (x *LogoutRequest) GetRefreshToken() string {
 }
 
 type VerifyEmailRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Email             string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
-	VerificationToken string                 `protobuf:"bytes,2,opt,name=verification_token,json=verificationToken,proto3" json:"verification_token,omitempty"`
-	AppId             int64                  `protobuf:"varint,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Email            string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
+	VerificationCode string                 `protobuf:"bytes,2,opt,name=verification_code,json=verificationCode,proto3" json:"verification_code,omitempty"`
+	AppId            int64                  `protobuf:"varint,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *VerifyEmailRequest) Reset() {
@@ -1101,9 +1101,9 @@ func (x *VerifyEmailRequest) GetEmail() string {
 	return ""
 }
 
-func (x *VerifyEmailRequest) GetVerificationToken() string {
+func (x *VerifyEmailRequest) GetVerificationCode() string {
 	if x != nil {
-		return x.VerificationToken
+		return x.VerificationCode
 	}
 	return ""
 }
@@ -1169,7 +1169,7 @@ func (x *VerifyEmailResponse) GetRefreshToken() string {
 	return ""
 }
 
-type GenerateNewVerificationTokenRequest struct {
+type GenerateNewVerificationCodeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Email         string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
 	AppId         int64                  `protobuf:"varint,2,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -1177,20 +1177,20 @@ type GenerateNewVerificationTokenRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GenerateNewVerificationTokenRequest) Reset() {
-	*x = GenerateNewVerificationTokenRequest{}
+func (x *GenerateNewVerificationCodeRequest) Reset() {
+	*x = GenerateNewVerificationCodeRequest{}
 	mi := &file_sso_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GenerateNewVerificationTokenRequest) String() string {
+func (x *GenerateNewVerificationCodeRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GenerateNewVerificationTokenRequest) ProtoMessage() {}
+func (*GenerateNewVerificationCodeRequest) ProtoMessage() {}
 
-func (x *GenerateNewVerificationTokenRequest) ProtoReflect() protoreflect.Message {
+func (x *GenerateNewVerificationCodeRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_sso_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1202,19 +1202,19 @@ func (x *GenerateNewVerificationTokenRequest) ProtoReflect() protoreflect.Messag
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GenerateNewVerificationTokenRequest.ProtoReflect.Descriptor instead.
-func (*GenerateNewVerificationTokenRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use GenerateNewVerificationCodeRequest.ProtoReflect.Descriptor instead.
+func (*GenerateNewVerificationCodeRequest) Descriptor() ([]byte, []int) {
 	return file_sso_proto_rawDescGZIP(), []int{20}
 }
 
-func (x *GenerateNewVerificationTokenRequest) GetEmail() string {
+func (x *GenerateNewVerificationCodeRequest) GetEmail() string {
 	if x != nil {
 		return x.Email
 	}
 	return ""
 }
 
-func (x *GenerateNewVerificationTokenRequest) GetAppId() int64 {
+func (x *GenerateNewVerificationCodeRequest) GetAppId() int64 {
 	if x != nil {
 		return x.AppId
 	}
@@ -1320,18 +1320,18 @@ const file_sso_proto_rawDesc = "" +
 	"\x11MakeAdminResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\"4\n" +
 	"\rLogoutRequest\x12#\n" +
-	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"p\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"n\n" +
 	"\x12VerifyEmailRequest\x12\x14\n" +
-	"\x05email\x18\x01 \x01(\tR\x05email\x12-\n" +
-	"\x12verification_token\x18\x02 \x01(\tR\x11verificationToken\x12\x15\n" +
+	"\x05email\x18\x01 \x01(\tR\x05email\x12+\n" +
+	"\x11verification_code\x18\x02 \x01(\tR\x10verificationCode\x12\x15\n" +
 	"\x06app_id\x18\x03 \x01(\x03R\x05appId\"]\n" +
 	"\x13VerifyEmailResponse\x12!\n" +
 	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
-	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\"R\n" +
-	"#GenerateNewVerificationTokenRequest\x12\x14\n" +
+	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\"Q\n" +
+	"\"GenerateNewVerificationCodeRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\x03R\x05appId\"\a\n" +
-	"\x05Empty2\xb6\x06\n" +
+	"\x05Empty2\xb4\x06\n" +
 	"\x04Auth\x129\n" +
 	"\bRegister\x12\x15.auth.RegisterRequest\x1a\x16.auth.RegisterResponse\x120\n" +
 	"\x05Login\x12\x12.auth.LoginRequest\x1a\x13.auth.LoginResponse\x126\n" +
@@ -1345,8 +1345,8 @@ const file_sso_proto_rawDesc = "" +
 	"\x12UpdateRefreshToken\x12\x1e.auth.UpdateRefreshTokenRequst\x1a .auth.UpdateRefreshTokenResponse\x12<\n" +
 	"\tMakeAdmin\x12\x16.auth.MakeAdminRequest\x1a\x17.auth.MakeAdminResponse\x12*\n" +
 	"\x06Logout\x12\x13.auth.LogoutRequest\x1a\v.auth.Empty\x12B\n" +
-	"\vVerifyEmail\x12\x18.auth.VerifyEmailRequest\x1a\x19.auth.VerifyEmailResponse\x12V\n" +
-	"\x1cGenerateNewVerificationToken\x12).auth.GenerateNewVerificationTokenRequest\x1a\v.auth.EmptyB4Z2github.com/synnfluxx/TrustMeBroID/api/sso/v1;ssov1b\x06proto3"
+	"\vVerifyEmail\x12\x18.auth.VerifyEmailRequest\x1a\x19.auth.VerifyEmailResponse\x12T\n" +
+	"\x1bGenerateNewVerificationCode\x12(.auth.GenerateNewVerificationCodeRequest\x1a\v.auth.EmptyB4Z2github.com/synnfluxx/TrustMeBroID/api/sso/v1;ssov1b\x06proto3"
 
 var (
 	file_sso_proto_rawDescOnce sync.Once
@@ -1362,28 +1362,28 @@ func file_sso_proto_rawDescGZIP() []byte {
 
 var file_sso_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_sso_proto_goTypes = []any{
-	(*RegisterRequest)(nil),                     // 0: auth.RegisterRequest
-	(*RegisterResponse)(nil),                    // 1: auth.RegisterResponse
-	(*LoginRequest)(nil),                        // 2: auth.LoginRequest
-	(*LoginResponse)(nil),                       // 3: auth.LoginResponse
-	(*IsAdminRequest)(nil),                      // 4: auth.IsAdminRequest
-	(*IsAdminResponse)(nil),                     // 5: auth.IsAdminResponse
-	(*RegisterAppRequest)(nil),                  // 6: auth.RegisterAppRequest
-	(*RegisterAppResponse)(nil),                 // 7: auth.RegisterAppResponse
-	(*DeleteUserRequest)(nil),                   // 8: auth.DeleteUserRequest
-	(*DeleteAdminRequest)(nil),                  // 9: auth.DeleteAdminRequest
-	(*DeleteAppRequest)(nil),                    // 10: auth.DeleteAppRequest
-	(*RefreshTokenRequest)(nil),                 // 11: auth.RefreshTokenRequest
-	(*RefreshTokenResponse)(nil),                // 12: auth.RefreshTokenResponse
-	(*UpdateRefreshTokenRequst)(nil),            // 13: auth.UpdateRefreshTokenRequst
-	(*UpdateRefreshTokenResponse)(nil),          // 14: auth.UpdateRefreshTokenResponse
-	(*MakeAdminRequest)(nil),                    // 15: auth.MakeAdminRequest
-	(*MakeAdminResponse)(nil),                   // 16: auth.MakeAdminResponse
-	(*LogoutRequest)(nil),                       // 17: auth.LogoutRequest
-	(*VerifyEmailRequest)(nil),                  // 18: auth.VerifyEmailRequest
-	(*VerifyEmailResponse)(nil),                 // 19: auth.VerifyEmailResponse
-	(*GenerateNewVerificationTokenRequest)(nil), // 20: auth.GenerateNewVerificationTokenRequest
-	(*Empty)(nil),                               // 21: auth.Empty
+	(*RegisterRequest)(nil),                    // 0: auth.RegisterRequest
+	(*RegisterResponse)(nil),                   // 1: auth.RegisterResponse
+	(*LoginRequest)(nil),                       // 2: auth.LoginRequest
+	(*LoginResponse)(nil),                      // 3: auth.LoginResponse
+	(*IsAdminRequest)(nil),                     // 4: auth.IsAdminRequest
+	(*IsAdminResponse)(nil),                    // 5: auth.IsAdminResponse
+	(*RegisterAppRequest)(nil),                 // 6: auth.RegisterAppRequest
+	(*RegisterAppResponse)(nil),                // 7: auth.RegisterAppResponse
+	(*DeleteUserRequest)(nil),                  // 8: auth.DeleteUserRequest
+	(*DeleteAdminRequest)(nil),                 // 9: auth.DeleteAdminRequest
+	(*DeleteAppRequest)(nil),                   // 10: auth.DeleteAppRequest
+	(*RefreshTokenRequest)(nil),                // 11: auth.RefreshTokenRequest
+	(*RefreshTokenResponse)(nil),               // 12: auth.RefreshTokenResponse
+	(*UpdateRefreshTokenRequst)(nil),           // 13: auth.UpdateRefreshTokenRequst
+	(*UpdateRefreshTokenResponse)(nil),         // 14: auth.UpdateRefreshTokenResponse
+	(*MakeAdminRequest)(nil),                   // 15: auth.MakeAdminRequest
+	(*MakeAdminResponse)(nil),                  // 16: auth.MakeAdminResponse
+	(*LogoutRequest)(nil),                      // 17: auth.LogoutRequest
+	(*VerifyEmailRequest)(nil),                 // 18: auth.VerifyEmailRequest
+	(*VerifyEmailResponse)(nil),                // 19: auth.VerifyEmailResponse
+	(*GenerateNewVerificationCodeRequest)(nil), // 20: auth.GenerateNewVerificationCodeRequest
+	(*Empty)(nil),                              // 21: auth.Empty
 }
 var file_sso_proto_depIdxs = []int32{
 	0,  // 0: auth.Auth.Register:input_type -> auth.RegisterRequest
@@ -1398,7 +1398,7 @@ var file_sso_proto_depIdxs = []int32{
 	15, // 9: auth.Auth.MakeAdmin:input_type -> auth.MakeAdminRequest
 	17, // 10: auth.Auth.Logout:input_type -> auth.LogoutRequest
 	18, // 11: auth.Auth.VerifyEmail:input_type -> auth.VerifyEmailRequest
-	20, // 12: auth.Auth.GenerateNewVerificationToken:input_type -> auth.GenerateNewVerificationTokenRequest
+	20, // 12: auth.Auth.GenerateNewVerificationCode:input_type -> auth.GenerateNewVerificationCodeRequest
 	1,  // 13: auth.Auth.Register:output_type -> auth.RegisterResponse
 	3,  // 14: auth.Auth.Login:output_type -> auth.LoginResponse
 	5,  // 15: auth.Auth.IsAdmin:output_type -> auth.IsAdminResponse
@@ -1411,7 +1411,7 @@ var file_sso_proto_depIdxs = []int32{
 	16, // 22: auth.Auth.MakeAdmin:output_type -> auth.MakeAdminResponse
 	21, // 23: auth.Auth.Logout:output_type -> auth.Empty
 	19, // 24: auth.Auth.VerifyEmail:output_type -> auth.VerifyEmailResponse
-	21, // 25: auth.Auth.GenerateNewVerificationToken:output_type -> auth.Empty
+	21, // 25: auth.Auth.GenerateNewVerificationCode:output_type -> auth.Empty
 	13, // [13:26] is the sub-list for method output_type
 	0,  // [0:13] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name

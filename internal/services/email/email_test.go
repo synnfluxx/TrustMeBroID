@@ -107,7 +107,7 @@ func TestSendVerificationEmail_DeliversAWellFormedMessage(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	err := newService("127.0.0.1", port).
-		SendVerificationEmail("user@example.test", "tok-123", "https://app.test")
+		SendVerificationEmail("user@example.test", "123456")
 
 	require.NoError(t, err)
 
@@ -120,14 +120,18 @@ func TestSendVerificationEmail_DeliversAWellFormedMessage(t *testing.T) {
 	require.NotEmpty(t, headers["Subject"])
 }
 
-func TestSendVerificationEmail_LinkCarriesTokenAndAddress(t *testing.T) {
+func TestSendVerificationEmail_CarriesTheCode(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	require.NoError(t, newService("127.0.0.1", port).
-		SendVerificationEmail("user@example.test", "tok-123", "https://app.test"))
+		SendVerificationEmail("user@example.test", "123456"))
 
 	message := <-received
-	require.Contains(t, message, "https://app.test/auth/verify?token=tok-123&email=user@example.test")
+	// Twice: once in the preheader the inbox shows, once in the body. Both are
+	// rendered from the same field, and a mismatch between them would leave
+	// one of the two empty.
+	require.Equal(t, 2, strings.Count(message, "123456"), "the code must appear in the preheader and in the body")
+	require.NotContains(t, message, "/auth/verify", "the mail no longer carries a link")
 }
 
 // The template renders the address into the body, so a crafted address is
@@ -137,7 +141,7 @@ func TestSendVerificationEmail_AddressIsNotHTMLEscaped(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	require.NoError(t, newService("127.0.0.1", port).
-		SendVerificationEmail(`a<script>alert(1)</script>@example.test`, "tok", "https://app.test"))
+		SendVerificationEmail(`a<script>alert(1)</script>@example.test`, "123456"))
 
 	message := <-received
 	require.Contains(t, message, "<script>alert(1)</script>",
@@ -150,7 +154,7 @@ func TestSendVerificationEmail_HasNoDateHeader(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	require.NoError(t, newService("127.0.0.1", port).
-		SendVerificationEmail("user@example.test", "tok", "https://app.test"))
+		SendVerificationEmail("user@example.test", "123456"))
 
 	_, hasDate := headersOf(<-received)["Date"]
 	require.False(t, hasDate, "no Date header is emitted today")
@@ -161,7 +165,7 @@ func TestSendVerificationEmail_SubjectIsNotMIMEEncoded(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	require.NoError(t, newService("127.0.0.1", port).
-		SendVerificationEmail("user@example.test", "tok", "https://app.test"))
+		SendVerificationEmail("user@example.test", "123456"))
 
 	subject := headersOf(<-received)["Subject"]
 	require.NotContains(t, subject, "=?UTF-8?", "subject is sent as raw UTF-8")
@@ -179,7 +183,7 @@ func TestSendVerificationEmail_RefusesWhenSMTPUnconfigured(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := newService(tc.host, tc.port).
-				SendVerificationEmail("user@example.test", "tok", "https://app.test")
+				SendVerificationEmail("user@example.test", "123456")
 
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "smtp is not configured")
@@ -190,20 +194,20 @@ func TestSendVerificationEmail_RefusesWhenSMTPUnconfigured(t *testing.T) {
 func TestSendVerificationEmail_UnreachableRelay(t *testing.T) {
 	// Port 1 is reserved and never listening.
 	err := newService("127.0.0.1", 1).
-		SendVerificationEmail("user@example.test", "tok", "https://app.test")
+		SendVerificationEmail("user@example.test", "123456")
 
 	require.Error(t, err)
 }
 
-// An empty base URL produces a relative link that no mail client can open. The
-// send still succeeds, so only the log would reveal it.
-func TestSendVerificationEmail_EmptyBaseURLStillSends(t *testing.T) {
+// A code that lost its leading zeros is not the code that was stored, and the
+// comparison on the other side would never match.
+func TestSendVerificationEmail_KeepsLeadingZeros(t *testing.T) {
 	port, received := fakeSMTP(t)
 
 	require.NoError(t, newService("127.0.0.1", port).
-		SendVerificationEmail("user@example.test", "tok", ""))
+		SendVerificationEmail("user@example.test", "007042"))
 
-	require.Contains(t, <-received, "/auth/verify?token=tok")
+	require.Contains(t, <-received, "007042")
 }
 
 func TestSMTPFailureHint(t *testing.T) {

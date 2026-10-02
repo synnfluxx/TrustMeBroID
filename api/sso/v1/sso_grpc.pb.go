@@ -19,19 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Auth_Register_FullMethodName                     = "/auth.Auth/Register"
-	Auth_Login_FullMethodName                        = "/auth.Auth/Login"
-	Auth_IsAdmin_FullMethodName                      = "/auth.Auth/IsAdmin"
-	Auth_RegisterApp_FullMethodName                  = "/auth.Auth/RegisterApp"
-	Auth_DeleteUser_FullMethodName                   = "/auth.Auth/DeleteUser"
-	Auth_DeleteAdmin_FullMethodName                  = "/auth.Auth/DeleteAdmin"
-	Auth_DeleteApp_FullMethodName                    = "/auth.Auth/DeleteApp"
-	Auth_RefreshAccessToken_FullMethodName           = "/auth.Auth/RefreshAccessToken"
-	Auth_UpdateRefreshToken_FullMethodName           = "/auth.Auth/UpdateRefreshToken"
-	Auth_MakeAdmin_FullMethodName                    = "/auth.Auth/MakeAdmin"
-	Auth_Logout_FullMethodName                       = "/auth.Auth/Logout"
-	Auth_VerifyEmail_FullMethodName                  = "/auth.Auth/VerifyEmail"
-	Auth_GenerateNewVerificationToken_FullMethodName = "/auth.Auth/GenerateNewVerificationToken"
+	Auth_Register_FullMethodName                    = "/auth.Auth/Register"
+	Auth_Login_FullMethodName                       = "/auth.Auth/Login"
+	Auth_IsAdmin_FullMethodName                     = "/auth.Auth/IsAdmin"
+	Auth_RegisterApp_FullMethodName                 = "/auth.Auth/RegisterApp"
+	Auth_DeleteUser_FullMethodName                  = "/auth.Auth/DeleteUser"
+	Auth_DeleteAdmin_FullMethodName                 = "/auth.Auth/DeleteAdmin"
+	Auth_DeleteApp_FullMethodName                   = "/auth.Auth/DeleteApp"
+	Auth_RefreshAccessToken_FullMethodName          = "/auth.Auth/RefreshAccessToken"
+	Auth_UpdateRefreshToken_FullMethodName          = "/auth.Auth/UpdateRefreshToken"
+	Auth_MakeAdmin_FullMethodName                   = "/auth.Auth/MakeAdmin"
+	Auth_Logout_FullMethodName                      = "/auth.Auth/Logout"
+	Auth_VerifyEmail_FullMethodName                 = "/auth.Auth/VerifyEmail"
+	Auth_GenerateNewVerificationCode_FullMethodName = "/auth.Auth/GenerateNewVerificationCode"
 )
 
 // AuthClient is the client API for Auth service.
@@ -50,7 +50,7 @@ type AuthClient interface {
 	MakeAdmin(ctx context.Context, in *MakeAdminRequest, opts ...grpc.CallOption) (*MakeAdminResponse, error)
 	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*Empty, error)
 	VerifyEmail(ctx context.Context, in *VerifyEmailRequest, opts ...grpc.CallOption) (*VerifyEmailResponse, error)
-	GenerateNewVerificationToken(ctx context.Context, in *GenerateNewVerificationTokenRequest, opts ...grpc.CallOption) (*Empty, error)
+	GenerateNewVerificationCode(ctx context.Context, in *GenerateNewVerificationCodeRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type authClient struct {
@@ -181,10 +181,10 @@ func (c *authClient) VerifyEmail(ctx context.Context, in *VerifyEmailRequest, op
 	return out, nil
 }
 
-func (c *authClient) GenerateNewVerificationToken(ctx context.Context, in *GenerateNewVerificationTokenRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *authClient) GenerateNewVerificationCode(ctx context.Context, in *GenerateNewVerificationCodeRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, Auth_GenerateNewVerificationToken_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Auth_GenerateNewVerificationCode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ type AuthServer interface {
 	MakeAdmin(context.Context, *MakeAdminRequest) (*MakeAdminResponse, error)
 	Logout(context.Context, *LogoutRequest) (*Empty, error)
 	VerifyEmail(context.Context, *VerifyEmailRequest) (*VerifyEmailResponse, error)
-	GenerateNewVerificationToken(context.Context, *GenerateNewVerificationTokenRequest) (*Empty, error)
+	GenerateNewVerificationCode(context.Context, *GenerateNewVerificationCodeRequest) (*Empty, error)
 	mustEmbedUnimplementedAuthServer()
 }
 
@@ -254,8 +254,8 @@ func (UnimplementedAuthServer) Logout(context.Context, *LogoutRequest) (*Empty, 
 func (UnimplementedAuthServer) VerifyEmail(context.Context, *VerifyEmailRequest) (*VerifyEmailResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VerifyEmail not implemented")
 }
-func (UnimplementedAuthServer) GenerateNewVerificationToken(context.Context, *GenerateNewVerificationTokenRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method GenerateNewVerificationToken not implemented")
+func (UnimplementedAuthServer) GenerateNewVerificationCode(context.Context, *GenerateNewVerificationCodeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateNewVerificationCode not implemented")
 }
 func (UnimplementedAuthServer) mustEmbedUnimplementedAuthServer() {}
 func (UnimplementedAuthServer) testEmbeddedByValue()              {}
@@ -494,20 +494,20 @@ func _Auth_VerifyEmail_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Auth_GenerateNewVerificationToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GenerateNewVerificationTokenRequest)
+func _Auth_GenerateNewVerificationCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateNewVerificationCodeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AuthServer).GenerateNewVerificationToken(ctx, in)
+		return srv.(AuthServer).GenerateNewVerificationCode(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Auth_GenerateNewVerificationToken_FullMethodName,
+		FullMethod: Auth_GenerateNewVerificationCode_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AuthServer).GenerateNewVerificationToken(ctx, req.(*GenerateNewVerificationTokenRequest))
+		return srv.(AuthServer).GenerateNewVerificationCode(ctx, req.(*GenerateNewVerificationCodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -568,8 +568,8 @@ var Auth_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Auth_VerifyEmail_Handler,
 		},
 		{
-			MethodName: "GenerateNewVerificationToken",
-			Handler:    _Auth_GenerateNewVerificationToken_Handler,
+			MethodName: "GenerateNewVerificationCode",
+			Handler:    _Auth_GenerateNewVerificationCode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

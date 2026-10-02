@@ -132,7 +132,7 @@ func (m *MockStorage) DeleteApp(ctx context.Context, appID int64) error {
 	return args.Error(0)
 }
 
-func (m *MockStorage) UpdateVerificationToken(ctx context.Context, email string, appID int64, newToken string) error {
+func (m *MockStorage) UpdateVerificationCode(ctx context.Context, email string, appID int64, newToken string) error {
 	args := m.Called(ctx, email, appID, newToken)
 	return args.Error(0)
 }
@@ -172,11 +172,11 @@ type MockEmailService struct {
 	mock.Mock
 }
 
-func (m *MockEmailService) SendVerificationEmail(email, verificationToken string, url string) error {
+func (m *MockEmailService) SendVerificationEmail(email, verificationCode string) error {
 	if len(m.ExpectedCalls) == 0 {
 		return nil
 	}
-	args := m.Called(email, verificationToken, url)
+	args := m.Called(email, verificationCode)
 	return args.Error(0)
 }
 
@@ -434,7 +434,7 @@ func TestRegisterNewUser_Success(t *testing.T) {
 	storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
 	storageMock.On("SaveUser", mock.Anything, "test@mail.com", "user123",
 		mock.AnythingOfType("[]uint8"), int64(1), mock.AnythingOfType("string")).Return(int64(99), nil)
-	emailMock.On("SendVerificationEmail", "test@mail.com", mock.AnythingOfType("string"), "https://example.test").Return(nil)
+	emailMock.On("SendVerificationEmail", "test@mail.com", mock.AnythingOfType("string")).Return(nil)
 
 	id, err := svc.RegisterNewUser(context.Background(), "test@mail.com", "user123", "Password1", 1)
 
@@ -453,7 +453,7 @@ func TestRegisterNewUser_StoredCodeMatchesEmailedCode(t *testing.T) {
 	storageMock.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1, RedirectURI: "https://example.test"}, nil)
 	storageMock.On("SaveUser", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) { stored = args.String(5) }).Return(int64(1), nil)
-	emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything, mock.Anything).
+	emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) { emailed = args.String(1) }).Return(nil)
 
 	_, err := svc.RegisterNewUser(context.Background(), "test@mail.com", "user123", "Password1", 1)
@@ -470,7 +470,7 @@ func TestRegisterNewUser_PasswordIsHashedNotStored(t *testing.T) {
 	storageMock.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1}, nil)
 	storageMock.On("SaveUser", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) { hash = args.Get(3).([]byte) }).Return(int64(1), nil)
-	emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything).Return(nil)
 
 	_, err := svc.RegisterNewUser(context.Background(), "test@mail.com", "user123", "Password1", 1)
 
@@ -510,7 +510,7 @@ func TestRegisterNewUser_Failures(t *testing.T) {
 				s.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1}, nil)
 				s.On("SaveUser", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return(int64(5), nil)
-				e.On("SendVerificationEmail", mock.Anything, mock.Anything, mock.Anything).Return(errors.New("smtp down"))
+				e.On("SendVerificationEmail", mock.Anything, mock.Anything).Return(errors.New("smtp down"))
 			},
 			wantErr: nil,
 		},
@@ -536,15 +536,17 @@ func TestRegisterNewUser_Failures(t *testing.T) {
 // ------------------------------------------------------------ Verify -------
 
 func TestVerifyUserEmail(t *testing.T) {
-	recent := sql.NullTime{Time: time.Now().Add(-time.Hour), Valid: true}
-	stale := sql.NullTime{Time: time.Now().Add(-100 * time.Hour), Valid: true}
+	// Relative to the lifetime rather than to a fixed duration, so shortening
+	// it again does not quietly turn every case into an expired one.
+	recent := sql.NullTime{Time: time.Now().Add(-verificationCodeTTL / 2), Valid: true}
+	stale := sql.NullTime{Time: time.Now().Add(-2 * verificationCodeTTL), Valid: true}
 	app := models.App{ID: 1, Secret: "app-secret"}
 
 	// Confirming proves ownership of the account, so it ends in a session.
 	t.Run("confirms and issues a session", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: recent,
+			ID: 3, VerificationCode: "code", LastCodeGeneratedTime: recent,
 		}, nil)
 		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
@@ -564,7 +566,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("an already verified account still has to present the code", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			ID: 3, IsVerified: true, VerificationCode: "expected", LastTokenGeneratedTime: recent,
+			ID: 3, IsVerified: true, VerificationCode: "expected", LastCodeGeneratedTime: recent,
 		}, nil)
 
 		access, refresh, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "guessed", 1)
@@ -578,7 +580,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("a correct code on an already verified account is idempotent", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			ID: 3, IsVerified: true, VerificationCode: "code", LastTokenGeneratedTime: recent,
+			ID: 3, IsVerified: true, VerificationCode: "code", LastCodeGeneratedTime: recent,
 		}, nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
 		jwtMock.On("SaveRefreshToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -594,7 +596,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("wrong code", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			VerificationCode: "expected", LastTokenGeneratedTime: recent,
+			VerificationCode: "expected", LastCodeGeneratedTime: recent,
 		}, nil)
 
 		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "presented", 1)
@@ -607,12 +609,12 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("expired code, checked before the code itself", func(t *testing.T) {
 		svc, storageMock, _, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			VerificationCode: "expected", LastTokenGeneratedTime: stale,
+			VerificationCode: "expected", LastCodeGeneratedTime: stale,
 		}, nil)
 
 		_, _, err := svc.VerifyUserEmail(context.Background(), "a@b.c", "wrong-too", 1)
 
-		require.ErrorIs(t, err, ErrVerificationTokenExpired)
+		require.ErrorIs(t, err, ErrVerificationCodeExpired)
 	})
 
 	t.Run("unknown address", func(t *testing.T) {
@@ -627,7 +629,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("missing issue timestamp does not enforce expiry", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: sql.NullTime{},
+			ID: 3, VerificationCode: "code", LastCodeGeneratedTime: sql.NullTime{},
 		}, nil)
 		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
@@ -643,7 +645,7 @@ func TestVerifyUserEmail(t *testing.T) {
 	t.Run("account is marked verified even if the session cannot be issued", func(t *testing.T) {
 		svc, storageMock, jwtMock, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{
-			ID: 3, VerificationCode: "code", LastTokenGeneratedTime: recent,
+			ID: 3, VerificationCode: "code", LastCodeGeneratedTime: recent,
 		}, nil)
 		storageMock.On("VerifyUser", mock.Anything, "a@b.c", int64(1)).Return(nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(app, nil)
@@ -656,19 +658,19 @@ func TestVerifyUserEmail(t *testing.T) {
 	})
 }
 
-func TestGenerateNewVerificationToken(t *testing.T) {
+func TestGenerateNewVerificationCode(t *testing.T) {
 	t.Run("rotates the code and mails the new one", func(t *testing.T) {
 		svc, storageMock, _, _, emailMock := newTestAuth()
 
 		var rotated, emailed string
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{ID: 3}, nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1, RedirectURI: "https://example.test"}, nil)
-		storageMock.On("UpdateVerificationToken", mock.Anything, "a@b.c", int64(1), mock.AnythingOfType("string")).
+		storageMock.On("UpdateVerificationCode", mock.Anything, "a@b.c", int64(1), mock.AnythingOfType("string")).
 			Run(func(args mock.Arguments) { rotated = args.String(3) }).Return(nil)
-		emailMock.On("SendVerificationEmail", "a@b.c", mock.AnythingOfType("string"), "https://example.test").
+		emailMock.On("SendVerificationEmail", "a@b.c", mock.AnythingOfType("string")).
 			Run(func(args mock.Arguments) { emailed = args.String(1) }).Return(nil)
 
-		require.NoError(t, svc.GenerateNewVerificationToken(context.Background(), "a@b.c", 1))
+		require.NoError(t, svc.GenerateNewVerificationCode(context.Background(), "a@b.c", 1))
 		require.NotEmpty(t, rotated)
 		require.Equal(t, rotated, emailed)
 		storageMock.AssertExpectations(t)
@@ -678,7 +680,7 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 		svc, storageMock, _, _, _ := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{}, storage.ErrUserNotFound)
 
-		require.ErrorIs(t, svc.GenerateNewVerificationToken(context.Background(), "a@b.c", 1), ErrUserNotFound)
+		require.ErrorIs(t, svc.GenerateNewVerificationCode(context.Background(), "a@b.c", 1), ErrUserNotFound)
 	})
 
 	t.Run("unknown application", func(t *testing.T) {
@@ -686,7 +688,7 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{ID: 3}, nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(models.App{}, storage.ErrAppNotFound)
 
-		require.ErrorIs(t, svc.GenerateNewVerificationToken(context.Background(), "a@b.c", 1), storage.ErrAppNotFound)
+		require.ErrorIs(t, svc.GenerateNewVerificationCode(context.Background(), "a@b.c", 1), storage.ErrAppNotFound)
 	})
 
 	t.Run("delivery failure leaves the old code already invalidated", func(t *testing.T) {
@@ -695,11 +697,11 @@ func TestGenerateNewVerificationToken(t *testing.T) {
 		svc, storageMock, _, _, emailMock := newTestAuth()
 		storageMock.On("UserByEmail", mock.Anything, "a@b.c", int64(1)).Return(models.User{ID: 3}, nil)
 		storageMock.On("App", mock.Anything, int64(1)).Return(models.App{ID: 1}, nil)
-		storageMock.On("UpdateVerificationToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything, mock.Anything).Return(errors.New("smtp down"))
+		storageMock.On("UpdateVerificationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		emailMock.On("SendVerificationEmail", mock.Anything, mock.Anything).Return(errors.New("smtp down"))
 
-		require.Error(t, svc.GenerateNewVerificationToken(context.Background(), "a@b.c", 1))
-		storageMock.AssertCalled(t, "UpdateVerificationToken", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		require.Error(t, svc.GenerateNewVerificationCode(context.Background(), "a@b.c", 1))
+		storageMock.AssertCalled(t, "UpdateVerificationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }
 

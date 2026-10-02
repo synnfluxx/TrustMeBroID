@@ -439,32 +439,32 @@ func TestStorage_VerifyUser_UnknownAddress(t *testing.T) {
 	require.ErrorIs(t, store.VerifyUser(ctx, "absent@example.test", appID), strg.ErrUserNotFound)
 }
 
-func TestStorage_UpdateVerificationToken_RefreshesTheIssueTime(t *testing.T) {
+func TestStorage_UpdateVerificationCode_RefreshesTheIssueTime(t *testing.T) {
 	store, ctx := newTestStorage(t)
 	appID := createTestApp(t, store, ctx)
 	createTestUser(t, store, ctx, appID)
 
 	before, err := store.UserByEmail(ctx, email, appID)
 	require.NoError(t, err)
-	require.True(t, before.LastTokenGeneratedTime.Valid)
+	require.True(t, before.LastCodeGeneratedTime.Valid)
 
-	require.NoError(t, store.UpdateVerificationToken(ctx, email, appID, "rotated-code"))
+	require.NoError(t, store.UpdateVerificationCode(ctx, email, appID, "rotated-code"))
 
 	after, err := store.UserByEmail(ctx, email, appID)
 	require.NoError(t, err)
 	require.Equal(t, "rotated-code", after.VerificationCode)
 	// Without this the expiry window keeps counting from registration, so a
 	// resent code is born expired once the original window has passed.
-	require.False(t, after.LastTokenGeneratedTime.Time.Before(before.LastTokenGeneratedTime.Time),
+	require.False(t, after.LastCodeGeneratedTime.Time.Before(before.LastCodeGeneratedTime.Time),
 		"rotating the code must also refresh its issue time")
 }
 
-func TestStorage_UpdateVerificationToken_UnknownAddress(t *testing.T) {
+func TestStorage_UpdateVerificationCode_UnknownAddress(t *testing.T) {
 	store, ctx := newTestStorage(t)
 	appID := createTestApp(t, store, ctx)
 
 	require.ErrorIs(t,
-		store.UpdateVerificationToken(ctx, "absent@example.test", appID, "code"),
+		store.UpdateVerificationCode(ctx, "absent@example.test", appID, "code"),
 		strg.ErrUserNotFound)
 }
 

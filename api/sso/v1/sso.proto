@@ -17,7 +17,7 @@ service Auth {
   rpc MakeAdmin(MakeAdminRequest) returns (MakeAdminResponse);
   rpc Logout(LogoutRequest) returns (Empty);
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
-  rpc GenerateNewVerificationToken(GenerateNewVerificationTokenRequest) returns (Empty);
+  rpc GenerateNewVerificationCode(GenerateNewVerificationCodeRequest) returns (Empty);
 }
 
 message RegisterRequest {
@@ -117,7 +117,7 @@ message LogoutRequest {
 
 message VerifyEmailRequest {
   string email = 1;
-  string verification_token = 2;
+  string verification_code = 2;
   int64 app_id = 3;
 }
 
@@ -128,7 +128,7 @@ message VerifyEmailResponse {
   string refresh_token = 2;
 }
 
-message GenerateNewVerificationTokenRequest {
+message GenerateNewVerificationCodeRequest {
   string email = 1;
   int64 app_id = 2;
 }

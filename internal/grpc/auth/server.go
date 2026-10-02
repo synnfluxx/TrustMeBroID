@@ -39,7 +39,7 @@ type Auth interface {
 	MakeAdmin(ctx context.Context, userID, appID int64) (int64, error)
 	Logout(ctx context.Context, token string) error
 	VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) (accessToken, refreshToken string, err error)
-	GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error
+	GenerateNewVerificationCode(ctx context.Context, email string, appID int64) error
 }
 
 type serverAPI struct {
@@ -363,16 +363,16 @@ func (s *serverAPI) VerifyEmail(ctx context.Context, req *ssov1.VerifyEmailReque
 		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
 
-	if req.GetVerificationToken() == emptyString {
-		return nil, status.Error(codes.InvalidArgument, "verification_token is required")
+	if req.GetVerificationCode() == emptyString {
+		return nil, status.Error(codes.InvalidArgument, "verification_code is required")
 	}
 
-	accessToken, refreshToken, err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationToken(), req.GetAppId())
+	accessToken, refreshToken, err := s.auth.VerifyUserEmail(ctx, req.GetEmail(), req.GetVerificationCode(), req.GetAppId())
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, storage.ErrUserNotFound):
 			return nil, status.Error(codes.NotFound, "user not found")
-		case errors.Is(err, auth.ErrVerificationTokenExpired):
+		case errors.Is(err, auth.ErrVerificationCodeExpired):
 			return nil, status.Error(codes.FailedPrecondition, "verification token expired")
 		case errors.Is(err, auth.ErrInvalidCredentials):
 			return nil, status.Error(codes.InvalidArgument, "invalid verification token")
@@ -389,7 +389,7 @@ func (s *serverAPI) VerifyEmail(ctx context.Context, req *ssov1.VerifyEmailReque
 	}, nil
 }
 
-func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1.GenerateNewVerificationTokenRequest) (*ssov1.Empty, error) {
+func (s *serverAPI) GenerateNewVerificationCode(ctx context.Context, req *ssov1.GenerateNewVerificationCodeRequest) (*ssov1.Empty, error) {
 	if req.GetAppId() == emptyValue {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
@@ -398,7 +398,7 @@ func (s *serverAPI) GenerateNewVerificationToken(ctx context.Context, req *ssov1
 		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
 
-	err := s.auth.GenerateNewVerificationToken(ctx, req.GetEmail(), req.GetAppId())
+	err := s.auth.GenerateNewVerificationCode(ctx, req.GetEmail(), req.GetAppId())
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, storage.ErrUserNotFound):

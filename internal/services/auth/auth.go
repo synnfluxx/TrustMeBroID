@@ -15,10 +15,10 @@ import (
 
 	"github.com/synnfluxx/TrustMeBroID/internal/domain/models"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/encryptor"
+	"github.com/synnfluxx/TrustMeBroID/internal/lib/generation"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/jwt"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger"
 	"github.com/synnfluxx/TrustMeBroID/internal/lib/logger/sl"
-	tokengenerator "github.com/synnfluxx/TrustMeBroID/internal/lib/tokenGenerator"
 	"github.com/synnfluxx/TrustMeBroID/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -26,12 +26,12 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	//ErrInvalidAppID       = errors.New("invalid app id")
-	ErrUserExists               = errors.New("user already exists")
-	ErrAppExists                = errors.New("app already exists")
-	ErrUserNotFound             = errors.New("user not found")
-	ErrInvalidIdentifier        = errors.New("invalid identifier")
-	ErrUserNotVerified          = errors.New("user not verified")
-	ErrVerificationTokenExpired = errors.New("verification token expired")
+	ErrUserExists              = errors.New("user already exists")
+	ErrAppExists               = errors.New("app already exists")
+	ErrUserNotFound            = errors.New("user not found")
+	ErrInvalidIdentifier       = errors.New("invalid identifier")
+	ErrUserNotVerified         = errors.New("user not verified")
+	ErrVerificationCodeExpired = errors.New("verification code expired")
 )
 
 type Auth struct {
@@ -50,7 +50,7 @@ type Auth struct {
 }
 
 type EmailService interface {
-	SendVerificationEmail(email, verificationToken string, URL string) error
+	SendVerificationEmail(email, verificationCode string) error
 }
 
 type UserSaver interface {
@@ -67,7 +67,7 @@ type UserProvider interface {
 	DeleteUserByUsername(ctx context.Context, username string, appID int64) error
 	DeleteUserByEmail(ctx context.Context, email string, appID int64) error
 	VerifyUser(ctx context.Context, email string, appID int64) error
-	UpdateVerificationToken(ctx context.Context, email string, appID int64, newToken string) error
+	UpdateVerificationCode(ctx context.Context, email string, appID int64, newCode string) error
 }
 
 type AdminProvider interface {
@@ -295,8 +295,7 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 	)
 	log.Info("registering user")
 
-	app, err := a.appProvider.App(ctx, appID)
-	if err != nil {
+	if _, err := a.appProvider.App(ctx, appID); err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
 			log.Warn("registration rejected: unknown application",
 				slog.String("reason", "app_not_found"),
@@ -320,14 +319,14 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 	log.Debug("password hashed",
 		slog.Int("bcrypt_cost", bcrypt.DefaultCost), sl.Dur(time.Since(hashStart)))
 
-	verificationToken, err := tokengenerator.GenerateToken()
+	verificationCode, err := generation.GenerateCode()
 	if err != nil {
-		log.Error("registration failed: cannot generate verification token",
+		log.Error("registration failed: cannot generate verification code",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 
-	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationToken)
+	id, err := a.usrSaver.SaveUser(ctx, email, username, passHash, appID, verificationCode)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserExists) {
 			log.Warn("registration rejected: account already exists",
@@ -343,9 +342,9 @@ func (a *Auth) RegisterNewUser(ctx context.Context, email, username, pass string
 
 	log = log.With(slog.Int64(logger.KeyUserID, id))
 	log.Info("user row created, sending verification email",
-		sl.Token("verification", verificationToken))
+		sl.Token("verification", verificationCode))
 
-	if err := a.EmailService.SendVerificationEmail(email, verificationToken, app.RedirectURI); err != nil {
+	if err := a.EmailService.SendVerificationEmail(email, verificationCode); err != nil {
 		log.Error("registration incomplete: verification email was not sent",
 			slog.Int64("orphaned_user_id", id),
 			slog.String("impact", "account exists but cannot be verified or logged into"),
@@ -665,16 +664,23 @@ func (a *Auth) UpdateRefreshToken(ctx context.Context, token string) (string, er
 	return refreshToken, nil
 }
 
-// verificationTokenTTL must stay in step with the copy in the email template.
-const verificationTokenTTL = 72 * time.Hour
+// verificationCodeTTL must stay in step with the copy in the email template.
+// Six digits is a million possibilities, and a correct guess hands over a
+// session. The lifetime is what bounds how many guesses fit: at the API's
+// hundred requests a minute, 72 hours allowed almost half the space to be
+// tried. Quarter of an hour allows about fifteen hundred.
+//
+// The wording in the verification mail states this duration; the two change
+// together (internal/services/email/email.go).
+const verificationCodeTTL = 15 * time.Minute
 
-func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationToken string, appID int64) (string, string, error) {
+func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationCode string, appID int64) (string, string, error) {
 	const op = "auth.VerifyUserEmail"
 	start := time.Now()
 	log := logger.Op(ctx, a.log, op).With(
 		slog.Int64(logger.KeyAppID, appID),
 		sl.Email(email),
-		sl.Token("presented_verification", VerificationToken),
+		sl.Token("presented_verification", VerificationCode),
 	)
 	log.Debug("verification attempt received")
 
@@ -695,26 +701,36 @@ func (a *Auth) VerifyUserEmail(ctx context.Context, email string, VerificationTo
 	log = log.With(slog.Int64(logger.KeyUserID, usr.ID))
 
 	// The code is checked before anything else, including the already-verified shortcut.
-	if usr.LastTokenGeneratedTime.Valid {
-		age := time.Since(usr.LastTokenGeneratedTime.Time)
-		if age > verificationTokenTTL {
-			log.Warn("verification rejected: token expired",
-				slog.String("reason", "token_expired"),
-				slog.Time("token_issued_at", usr.LastTokenGeneratedTime.Time),
-				slog.Duration("token_age", age),
-				slog.Duration("ttl", verificationTokenTTL),
+	if usr.LastCodeGeneratedTime.Valid {
+		age := time.Since(usr.LastCodeGeneratedTime.Time)
+		if age > verificationCodeTTL {
+			log.Warn("verification rejected: code expired",
+				slog.String("reason", "code_expired"),
+				slog.Time("code_issued_at", usr.LastCodeGeneratedTime.Time),
+				slog.Duration("code_age", age),
+				slog.Duration("ttl", verificationCodeTTL),
 				slog.String(logger.KeyOutcome, logger.OutcomeRejected),
 				sl.Since(start))
-			return "", "", fmt.Errorf("%s: %w", op, ErrVerificationTokenExpired)
+			return "", "", fmt.Errorf("%s: %w", op, ErrVerificationCodeExpired)
 		}
 	} else {
-		log.Warn("verification token has no issue timestamp, expiry not enforced",
+		log.Warn("verification code has no issue timestamp, expiry not enforced",
 			slog.String("reason", "missing_issued_at"))
 	}
 
-	if subtle.ConstantTimeCompare([]byte(usr.VerificationCode), []byte(VerificationToken)) != 1 {
-		log.Warn("verification rejected: token mismatch",
-			slog.String("reason", "token_mismatch"),
+	// A verified account has no pending code, and the column reads as empty.
+	// Without this an empty presented code would compare equal to it.
+	if usr.VerificationCode == "" {
+		log.Warn("verification rejected: no code is pending for this account",
+			slog.String("reason", "no_pending_code"),
+			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
+			sl.Since(start))
+		return "", "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+	}
+
+	if subtle.ConstantTimeCompare([]byte(usr.VerificationCode), []byte(VerificationCode)) != 1 {
+		log.Warn("verification rejected: code mismatch",
+			slog.String("reason", "code_mismatch"),
 			sl.Token("expected_verification", usr.VerificationCode),
 			slog.String(logger.KeyOutcome, logger.OutcomeRejected),
 			sl.Since(start))
@@ -772,8 +788,8 @@ func (a *Auth) issueSession(ctx context.Context, log *slog.Logger, userID, appID
 	return accessToken, refreshToken, nil
 }
 
-func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, appID int64) error {
-	const op = "auth.GenerateNewVerificationToken"
+func (a *Auth) GenerateNewVerificationCode(ctx context.Context, email string, appID int64) error {
+	const op = "auth.GenerateNewVerificationCode"
 	start := time.Now()
 	log := logger.Op(ctx, a.log, op).With(
 		slog.Int64(logger.KeyAppID, appID),
@@ -803,8 +819,7 @@ func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, a
 			slog.String("reason", "already_verified"))
 	}
 
-	app, err := a.appProvider.App(ctx, appID)
-	if err != nil {
+	if _, err := a.appProvider.App(ctx, appID); err != nil {
 		if errors.Is(err, storage.ErrAppNotFound) {
 			log.Warn("resend rejected: unknown application",
 				slog.String("reason", "app_not_found"),
@@ -817,23 +832,23 @@ func (a *Auth) GenerateNewVerificationToken(ctx context.Context, email string, a
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	newVerificationToken, err := tokengenerator.GenerateToken()
+	newVerificationCode, err := generation.GenerateCode()
 	if err != nil {
-		log.Error("resend failed: cannot generate token",
+		log.Error("resend failed: cannot generate code",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	if err := a.usrProvider.UpdateVerificationToken(ctx, email, appID, newVerificationToken); err != nil {
+	if err := a.usrProvider.UpdateVerificationCode(ctx, email, appID, newVerificationCode); err != nil {
 		log.Error("resend failed: cannot store the new token",
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed), sl.Err(err))
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Debug("verification token rotated, previous token is now invalid",
-		sl.Token("new_verification", newVerificationToken))
+		sl.Token("new_verification", newVerificationCode))
 
-	if err := a.EmailService.SendVerificationEmail(email, newVerificationToken, app.RedirectURI); err != nil {
+	if err := a.EmailService.SendVerificationEmail(email, newVerificationCode); err != nil {
 		log.Error("resend failed: token was rotated but the email was not sent",
 			slog.String("impact", "the previous link no longer works and no new one was delivered"),
 			slog.String(logger.KeyOutcome, logger.OutcomeFailed),
